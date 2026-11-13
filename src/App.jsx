@@ -1405,7 +1405,7 @@ export default function App() {
       )}
 
       {/* top row */}
-      <div className="fixed top-3 left-3 right-3 z-20 flex items-start justify-between gap-2 pointer-events-none">
+      <div className="fixed top-3 left-3 right-3 z-30 flex items-start justify-between gap-2 pointer-events-none">
         <div className="pointer-events-auto">
           <TopMenu doc={doc} onAction={menuAction} />
         </div>
