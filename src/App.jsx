@@ -22,9 +22,10 @@ import {
   INK,
 } from "./lib/render";
 import * as Store from "./lib/storage";
-import { pointerCSS, POINTER_TOOLS, POINTERS } from "./lib/cursors";
+import { pointerCSS, stampCursor, POINTER_TOOLS, POINTERS } from "./lib/cursors";
+import * as Text from "./lib/text";
 
-const DRAW_TOOLS = ["pen", "hl", "eraser", "line", "arrow", "rect", "ellipse", "diamond", "text", "sticky"];
+const DRAW_TOOLS = ["pen", "hl", "eraser", "line", "arrow", "rect", "ellipse", "diamond", "text", "sticky", "stamp"];
 const DEFAULT_STYLE = {
   stroke: INK,
   fill: "transparent",
@@ -35,7 +36,15 @@ const DEFAULT_STYLE = {
   font: "hand",
   fontSize: 36,
   pointer: "plus",
+  bold: false,
+  italic: false,
+  underline: false,
+  stampKind: "emoji",
+  stamp: "😀",
+  stampSize: 56,
 };
+const TEXT_TYPES = ["text", "sticky"];
+const FMT_KEYS = ["bold", "italic", "underline"];
 const HANDLE_CURSOR = {
   nw: "nwse-resize",
   se: "nwse-resize",
@@ -63,6 +72,7 @@ const KEYMAP = {
   d: "diamond",
   t: "text",
   n: "sticky",
+  s: "stamp",
   i: "image",
 };
 const SNAP = 12;
@@ -114,6 +124,10 @@ export default function App() {
   const liveBefore = useRef(null);
   const toastTimer = useRef(null);
   const storageWarned = useRef(false);
+  const [loaded, setLoaded] = useState(false);
+  const remoteDoc = useRef(null); // doc that came from storage — don't echo it back
+  const pendingSave = useRef(null);
+  const stampReturn = useRef(null); // tool to go back to after a quick stamp from the pen
 
   // ---------------------------------------------------------------- helpers
   const showToast = (msg) => {
@@ -193,6 +207,7 @@ export default function App() {
   // ---------------------------------------------------------------- tools
   const setTool = (t) => {
     if (t === "image") return fileImg.current?.click();
+    stampReturn.current = null;
     finishEdit();
     setToolState(t);
     R.current.tool = t;
@@ -219,7 +234,7 @@ export default function App() {
     const empty = el && el.type === "text" && !el.text.trim();
     if (!prev && (!el || empty)) return setLive(before); // new, empty text → discard silently
     if (empty) return commit(els.filter((e) => e.id !== id), before); // existing text cleared → delete
-    if (!prev || prev.text !== el.text) commit(els, before);
+    if (!prev || prev !== el) commit(els, before); // text or formatting changed
   };
   const createText = (wx, wy, text = "") => {
     const st = R.current.style;
@@ -236,6 +251,9 @@ export default function App() {
       opacity: st.opacity,
       font: st.font,
       fontSize: st.fontSize,
+      bold: st.bold,
+      italic: st.italic,
+      underline: st.underline,
     });
     const before = R.current.elements;
     setLive([...before, el]);
@@ -300,7 +318,7 @@ export default function App() {
               before: r.elements,
               B: G.unionBounds(selEls),
               ids: new Set(r.selected),
-              keep: selEls.some((el) => el.type === "text" || el.type === "image"),
+              keep: selEls.some((el) => el.type === "text" || el.type === "image" || el.type === "stamp"),
             };
       return;
     }
@@ -429,10 +447,40 @@ export default function App() {
           strokeWidth: 1,
           font: st.font,
           fontSize: Math.min(st.fontSize, 36),
+          bold: st.bold,
+          italic: st.italic,
+          underline: st.underline,
         };
         const before = r.elements;
         setLive([...before, el]);
         startEdit(el.id, before);
+        break;
+      }
+      case "stamp": {
+        const size = st.stampSize;
+        const value =
+          st.stampKind === "number"
+            ? String(
+                1 +
+                  Math.max(
+                    0,
+                    ...r.elements.filter((x) => x.type === "stamp" && x.kind === "number").map((x) => +x.value || 0),
+                  ),
+              )
+            : st.stamp;
+        const el = {
+          ...base,
+          type: "stamp",
+          kind: st.stampKind,
+          value,
+          x: snapV(wx - size / 2),
+          y: snapV(wy - size / 2),
+          w: size,
+          h: size,
+          strokeWidth: 1,
+        };
+        commit([...r.elements, el]);
+        if (stampReturn.current) setTool(stampReturn.current); // quick stamp from the pen → back to drawing
         break;
       }
       case "eraser":
@@ -470,6 +518,7 @@ export default function App() {
     if (r.tool === "select") return "default";
     if (r.tool === "text") return "text";
     if (r.tool === "eraser") return "none";
+    if (r.tool === "stamp") return stampCursor(r.style, r.doc.dark);
     if (!POINTER_TOOLS.includes(r.tool)) return "crosshair";
     return pointerCSS({
       kind: r.style.pointer,
@@ -702,11 +751,17 @@ export default function App() {
       showToast("Could not load that image");
     }
   };
+  /** Elements a style change applies to: the selection plus the text being typed in. */
+  const styleTargets = () => {
+    const ids = new Set(R.current.selected);
+    if (R.current.editing) ids.add(R.current.editing);
+    return ids;
+  };
   const applyStyle = (patch, { live = false } = {}) => {
     setStyle((s) => ({ ...s, ...patch }));
     const r = R.current;
-    if (!r.selected.length) return;
-    const sel = new Set(r.selected);
+    const sel = styleTargets();
+    if (!sel.size) return;
     const next = r.elements.map((el) => {
       if (!sel.has(el.id)) return el;
       const u = { ...el };
@@ -719,9 +774,12 @@ export default function App() {
       if ("opacity" in patch) u.opacity = patch.opacity;
       if ("font" in patch && (t === "text" || t === "sticky")) u.font = patch.font;
       if ("fontSize" in patch && (t === "text" || t === "sticky")) u.fontSize = patch.fontSize;
+      for (const k of FMT_KEYS) if (k in patch && TEXT_TYPES.includes(t)) u[k] = patch[k];
       return fitText(u);
     });
-    if (live) {
+    if (r.editing) {
+      setLive(next); // recorded as one undo step when typing finishes
+    } else if (live) {
       liveBefore.current ||= r.elements;
       setLive(next);
     } else {
@@ -729,6 +787,40 @@ export default function App() {
       liveBefore.current = null;
     }
   };
+  /** Current value of a format flag (bold/italic/underline) for the panel and shortcuts. */
+  const fmtValue = (k) => {
+    const ids = styleTargets();
+    const el = R.current.elements.find((e) => ids.has(e.id) && TEXT_TYPES.includes(e.type));
+    return el ? !!el[k] : !!R.current.style[k];
+  };
+  const toggleFmt = (k) => applyStyle({ [k]: !fmtValue(k) });
+
+  /** Toggle bullets / numbers on the text being typed or the selected texts and notes. */
+  const applyList = (listStyle) => {
+    const ids = styleTargets();
+    const r = R.current;
+    if (!r.elements.some((el) => ids.has(el.id) && TEXT_TYPES.includes(el.type)))
+      return showToast("Click into a text or sticky note first");
+    const next = r.elements.map((el) =>
+      ids.has(el.id) && TEXT_TYPES.includes(el.type) ? fitText({ ...el, text: Text.applyList(el.text, listStyle) }) : el,
+    );
+    if (r.editing) setLive(next);
+    else commit(next);
+  };
+
+  /** Pick a stamp. `quick` = picked while drawing: place one, then go back to the pen. */
+  const pickStamp = (item, { quick = false } = {}) => {
+    setStyle((s) => ({ ...s, stampKind: item.kind, stamp: item.kind === "number" ? s.stamp : item.v }));
+    const r = R.current;
+    stampReturn.current = quick && r.tool !== "stamp" ? r.tool : null;
+    if (r.tool !== "stamp") {
+      finishEdit();
+      setToolState("stamp");
+      R.current.tool = "stamp";
+      setSel([]);
+    }
+  };
+
   const undo = () => {
     finishEdit();
     const h = H();
@@ -800,13 +892,21 @@ export default function App() {
     try {
       const d = JSON.parse(await Store.readFileAsText(file));
       if (Store.isValidDoc(d)) {
-        hist.current = {};
-        pageCams.current = {};
+        // Never replace existing work: the file's pages are added next to the current ones.
+        finishEdit();
         setSel([]);
-        const current = d.pages.some((p) => p.id === d.current) ? d.current : d.pages[0].id;
-        setDoc({ ...Store.newDoc(), bg: d.bg, dark: !!d.dark, snap: !!d.snap, pages: d.pages, current });
-        setTimeout(() => fitTo(d.pages.find((p) => p.id === current).elements), 0);
-        showToast(`Opened ${file.name}`);
+        const names = new Set(R.current.doc.pages.map((p) => p.name));
+        const imported = d.pages.map((p) => {
+          let name = p.name || "Page";
+          while (names.has(name)) name += " (imported)";
+          names.add(name);
+          return { ...p, id: G.uid(), name };
+        });
+        const keep = R.current.doc.pages.filter((p) => p.elements.length || R.current.doc.pages.length > 1);
+        pageCams.current[R.current.page.id] = camRef.current;
+        setDoc((cur) => ({ ...cur, pages: [...keep, ...imported], current: imported[0].id }));
+        setTimeout(() => fitTo(imported[0].elements), 0);
+        showToast(`Added ${imported.length} page${imported.length > 1 ? "s" : ""} from ${file.name}`);
       } else showToast("That file isn't a whiteboard (.json) file");
     } catch {
       showToast("Could not read that file");
@@ -849,6 +949,15 @@ export default function App() {
         return;
       }
       if (mod) {
+        const fmt = { b: "bold", i: "italic", u: "underline" }[k];
+        if (fmt) {
+          e.preventDefault();
+          return toggleFmt(fmt);
+        }
+        if (e.shiftKey && (e.code === "Digit8" || e.code === "Digit7")) {
+          e.preventDefault();
+          return applyList(e.code === "Digit8" ? "•" : "num");
+        }
         if (k === "z") (e.preventDefault(), e.shiftKey ? redo() : undo());
         else if (k === "y") (e.preventDefault(), redo());
         else if (k === "a") {
@@ -1075,16 +1184,80 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // persistence + theme
+  // ---------------------------------------------------------------- persistence
+  // 1) First paint uses the sync localStorage copy; then the newest copy (IndexedDB or localStorage) wins.
+  // 2) Nothing is written until that load finishes, so a blank start-up board can never overwrite saved work.
   useEffect(() => {
-    const t = setTimeout(() => {
-      if (!Store.saveDoc(doc) && !storageWarned.current) {
+    let alive = true;
+    Store.loadDocAsync()
+      .then((d) => {
+        if (alive && d && (d.savedAt || 0) > (R.current.doc.savedAt || 0)) {
+          remoteDoc.current = d;
+          setDoc(d);
+        }
+      })
+      .finally(() => alive && setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const flushSave = () => {
+    const d = pendingSave.current;
+    if (!d) return;
+    pendingSave.current = null;
+    Store.persistDoc(d).then((ok) => {
+      if (!ok && !storageWarned.current) {
         storageWarned.current = true;
-        showToast("Browser storage is full — use Save board to keep your work");
+        showToast("Could not save in this browser — use Save board to keep your work");
       }
-    }, 300);
+    });
+  };
+  useEffect(() => {
+    if (!loaded || doc === remoteDoc.current) return;
+    pendingSave.current = doc;
+    const t = setTimeout(flushSave, 250);
     return () => clearTimeout(t);
-  }, [doc]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, loaded]);
+
+  // 3) Reload / close / tab switch: write immediately so the last stroke is never lost.
+  // 4) Another tab saved: adopt its board, so an old tab can't overwrite newer work.
+  useEffect(() => {
+    const now = () => {
+      if (pendingSave.current) {
+        Store.persistDocNow(pendingSave.current);
+        pendingSave.current = null;
+      }
+    };
+    const onVis = () => document.visibilityState === "hidden" && now();
+    const onStorage = (e) => {
+      if (e.key !== Store.REV_KEY || !e.newValue) return;
+      try {
+        if (JSON.parse(e.newValue).tab === Store.TAB_ID) return;
+      } catch {
+        return;
+      }
+      Store.loadDocAsync().then((d) => {
+        if (!d) return;
+        const cur = R.current.doc.current;
+        const next = d.pages.some((p) => p.id === cur) ? { ...d, current: cur } : d;
+        remoteDoc.current = next;
+        pendingSave.current = null;
+        setDoc(next);
+      });
+    };
+    window.addEventListener("pagehide", now);
+    window.addEventListener("beforeunload", now);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("pagehide", now);
+      window.removeEventListener("beforeunload", now);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   useEffect(() => Store.saveStyle(style), [style]);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", doc.dark);
@@ -1093,7 +1266,7 @@ export default function App() {
   useEffect(() => {
     if (canvasRef.current && !spaceDown.current) canvasRef.current.style.cursor = toolCursor();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, style.pointer, style.stroke, style.strokeWidth, doc.dark, cam.z]);
+  }, [tool, style.pointer, style.stroke, style.strokeWidth, style.stamp, style.stampKind, doc.dark, cam.z]);
   useEffect(() => {
     if (!editing) return;
     const ta = taRef.current;
@@ -1108,9 +1281,16 @@ export default function App() {
   const canUndo = !!h?.past.length,
     canRedo = !!h?.future.length;
 
-  const ctxTypes = selected.length ? [...new Set(selEls.map((e) => e.type))] : DRAW_TOOLS.includes(tool) ? [tool] : [];
+  const editEl = editing && elements.find((el) => el.id === editing);
+  const ctxTypes = editEl
+    ? [editEl.type]
+    : selected.length
+      ? [...new Set(selEls.map((e) => e.type))]
+      : DRAW_TOOLS.includes(tool)
+        ? [tool]
+        : [];
   const showPanel = ctxTypes.length > 0;
-  const first = selEls[0];
+  const first = editEl || selEls[0];
   const values = first
     ? {
         ...style,
@@ -1122,10 +1302,12 @@ export default function App() {
         opacity: first.opacity ?? 1,
         font: first.font ?? style.font,
         fontSize: first.fontSize ?? style.fontSize,
+        ...(TEXT_TYPES.includes(first.type)
+          ? { bold: !!first.bold, italic: !!first.italic, underline: !!first.underline }
+          : {}),
       }
     : style;
 
-  const editEl = editing && elements.find((el) => el.id === editing);
   let editorStyle = null;
   if (editEl) {
     const z = cam.z,
@@ -1143,6 +1325,9 @@ export default function App() {
       opacity: editEl.opacity ?? 1,
       whiteSpace: sticky ? "pre-wrap" : "pre",
       overflowWrap: sticky ? "break-word" : "normal",
+      fontWeight: editEl.bold ? 700 : 400,
+      fontStyle: editEl.italic ? "italic" : "normal",
+      textDecoration: editEl.underline ? "underline" : "none",
     };
   }
 
@@ -1183,9 +1368,33 @@ export default function App() {
           onBlur={finishEdit}
           onKeyDown={(e) => {
             e.stopPropagation();
-            if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) {
+            const mod = e.ctrlKey || e.metaKey;
+            if (e.key === "Escape" || (e.key === "Enter" && mod)) {
               e.preventDefault();
-              finishEdit();
+              return finishEdit();
+            }
+            const fmt = mod && { b: "bold", i: "italic", u: "underline" }[e.key.toLowerCase()];
+            if (fmt) {
+              e.preventDefault();
+              return toggleFmt(fmt);
+            }
+            if (mod && e.shiftKey && (e.code === "Digit8" || e.code === "Digit7")) {
+              e.preventDefault();
+              return applyList(e.code === "Digit8" ? "•" : "num");
+            }
+            // Enter inside a point continues the list; Enter on an empty point ends it.
+            if (e.key === "Enter" && !e.shiftKey && !mod) {
+              const ta = e.currentTarget,
+                v = ta.value,
+                pos = ta.selectionStart;
+              const ls = v.lastIndexOf("\n", pos - 1) + 1;
+              const le = v.indexOf("\n", pos);
+              const c = Text.continueList(v.slice(ls, le < 0 ? v.length : le));
+              if (!c) return;
+              e.preventDefault();
+              if (c.empty) ta.setRangeText("", ls, ls + c.prefixLen, "start");
+              else ta.setRangeText("\n" + c.next, pos, ta.selectionEnd, "end");
+              onEditText(ta.value);
             }
           }}
           spellCheck={false}
@@ -1219,7 +1428,11 @@ export default function App() {
 
       {/* properties */}
       {showPanel && (
-        <div className="fixed left-3 top-[68px] z-20 flex flex-col items-start gap-2">
+        <div
+          className="fixed left-3 top-[68px] z-20 flex flex-col items-start gap-2"
+          // Keep the text cursor in the note/text while clicking panel buttons (B / I / U, points…).
+          onMouseDown={(e) => editing && e.target.tagName !== "INPUT" && e.preventDefault()}
+        >
           <button
             className={`panel icon-btn !w-11 !h-11 ${panelOpen ? "on" : ""}`}
             title={panelOpen ? "Hide style panel" : "Show style panel"}
@@ -1239,6 +1452,10 @@ export default function App() {
               onAlign={(k) => commit(G.align(elements, selected, k))}
               onDuplicate={duplicate}
               onDelete={deleteSel}
+              editing={!!editEl}
+              onToggleFmt={toggleFmt}
+              onList={applyList}
+              onStamp={pickStamp}
             />
           )}
         </div>

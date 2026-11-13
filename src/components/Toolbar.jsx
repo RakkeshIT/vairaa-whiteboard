@@ -13,6 +13,7 @@ import {
   Type,
   StickyNote,
   ImagePlus,
+  Smile,
 } from "lucide-react";
 
 export const TOOLS = [
@@ -32,6 +33,7 @@ export const TOOLS = [
   "|",
   { id: "text", icon: Type, label: "Text", key: "T" },
   { id: "sticky", icon: StickyNote, label: "Sticky note", key: "N" },
+  { id: "stamp", icon: Smile, label: "Emoji, avatars & points", key: "S" },
   { id: "image", icon: ImagePlus, label: "Insert image", key: "I" },
 ];
 

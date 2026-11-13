@@ -9,7 +9,24 @@ export const FONTS = {
 export const LINE_HEIGHT = 1.25;
 export const STICKY_PAD = 14;
 export const INK = "#1e1e1e";
-export const fontOf = (el) => `${el.fontSize}px ${FONTS[el.font] || FONTS.sans}`;
+export const fontOf = (el) =>
+  `${el.italic ? "italic " : ""}${el.bold ? "700 " : ""}${el.fontSize}px ${FONTS[el.font] || FONTS.sans}`;
+export const EMOJI_FONT = '"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
+
+/** Black or white text, whichever reads better on `hex`. */
+export function contrastText(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return "#fff";
+  const n = parseInt(m[1], 16);
+  const lum = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return lum > 0.62 ? "#111827" : "#ffffff";
+}
+
+function underline(ctx, text, x, y, size) {
+  const w = ctx.measureText(text).width;
+  if (!w) return;
+  ctx.fillRect(x, y + size * 1.02, w, Math.max(1, size / 14));
+}
 
 /** Default ink flips to light on dark boards so drawings stay visible. */
 export const colorFor = (c, dark) => (dark && c === INK ? "#e9e9ee" : !dark && c === "#ffffff" ? "#ffffff" : c);
@@ -185,7 +202,11 @@ export function drawElement(ctx, el, { dark = false, noCache = false, hideText =
       if (hideText) break;
       ctx.font = fontOf(el);
       ctx.textBaseline = "top";
-      (el.text || "").split("\n").forEach((ln, i) => ctx.fillText(ln, el.x, el.y + i * el.fontSize * LINE_HEIGHT));
+      (el.text || "").split("\n").forEach((ln, i) => {
+        const y = el.y + i * el.fontSize * LINE_HEIGHT;
+        ctx.fillText(ln, el.x, y);
+        if (el.underline) underline(ctx, ln, el.x, y, el.fontSize);
+      });
       break;
     }
     case "sticky": {
@@ -205,10 +226,34 @@ export function drawElement(ctx, el, { dark = false, noCache = false, hideText =
       ctx.fillStyle = "#1f2937";
       ctx.font = fontOf(el);
       ctx.textBaseline = "top";
-      wrapText(ctx, el.text, b.w - STICKY_PAD * 2).forEach((ln, i) =>
-        ctx.fillText(ln, b.x + STICKY_PAD, b.y + STICKY_PAD + i * el.fontSize * LINE_HEIGHT),
-      );
+      wrapText(ctx, el.text, b.w - STICKY_PAD * 2).forEach((ln, i) => {
+        const y = b.y + STICKY_PAD + i * el.fontSize * LINE_HEIGHT;
+        ctx.fillText(ln, b.x + STICKY_PAD, y);
+        if (el.underline) underline(ctx, ln, b.x + STICKY_PAD, y, el.fontSize);
+      });
       ctx.restore();
+      break;
+    }
+    case "stamp": {
+      const b = getBounds(el);
+      const s = Math.min(b.w, b.h),
+        cx = b.x + b.w / 2,
+        cy = b.y + b.h / 2;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      if (el.kind === "number") {
+        ctx.beginPath();
+        ctx.arc(cx, cy, s / 2, 0, Math.PI * 2);
+        ctx.fillStyle = stroke;
+        ctx.fill();
+        ctx.fillStyle = contrastText(stroke);
+        const len = String(el.value).length;
+        ctx.font = `700 ${s * (len > 2 ? 0.38 : len > 1 ? 0.46 : 0.56)}px ${FONTS.sans}`;
+        ctx.fillText(String(el.value), cx, cy + s * 0.03);
+      } else {
+        ctx.font = `${s * 0.86}px ${EMOJI_FONT}`;
+        ctx.fillText(el.value, cx, cy + s * 0.06);
+      }
       break;
     }
     case "image": {
@@ -352,6 +397,9 @@ export function renderToCanvas(els, { dark, scale = 2, pad = 32, background = tr
   return cv;
 }
 
+const fmt = (el) =>
+  `${el.bold ? ' font-weight="700"' : ""}${el.italic ? ' font-style="italic"' : ""}${el.underline ? ' text-decoration="underline"' : ""}`;
+
 /** Vector SVG export. */
 export function renderToSVG(els, { dark, pad = 32, background = true }) {
   const b = unionBounds(els);
@@ -413,7 +461,7 @@ export function renderToSVG(els, { dark, pad = 32, background = true }) {
       case "text":
         (el.text || "").split("\n").forEach((ln, i) =>
           parts.push(
-            `<text x="${el.x}" y="${el.y + i * el.fontSize * LINE_HEIGHT}" dominant-baseline="hanging" font-size="${el.fontSize}" font-family='${FONTS[el.font] || FONTS.sans}' fill="${st}" opacity="${op}" xml:space="preserve">${esc(ln)}</text>`,
+            `<text x="${el.x}" y="${el.y + i * el.fontSize * LINE_HEIGHT}" dominant-baseline="hanging" font-size="${el.fontSize}" font-family='${FONTS[el.font] || FONTS.sans}'${fmt(el)} fill="${st}" opacity="${op}" xml:space="preserve">${esc(ln)}</text>`,
           ),
         );
         break;
@@ -422,9 +470,24 @@ export function renderToSVG(els, { dark, pad = 32, background = true }) {
         mctx.font = fontOf(el);
         wrapText(mctx, el.text, bb.w - STICKY_PAD * 2).forEach((ln, i) =>
           parts.push(
-            `<text x="${bb.x + STICKY_PAD}" y="${bb.y + STICKY_PAD + i * el.fontSize * LINE_HEIGHT}" dominant-baseline="hanging" font-size="${el.fontSize}" font-family='${FONTS[el.font] || FONTS.sans}' fill="#1f2937" opacity="${op}" xml:space="preserve">${esc(ln)}</text>`,
+            `<text x="${bb.x + STICKY_PAD}" y="${bb.y + STICKY_PAD + i * el.fontSize * LINE_HEIGHT}" dominant-baseline="hanging" font-size="${el.fontSize}" font-family='${FONTS[el.font] || FONTS.sans}'${fmt(el)} fill="#1f2937" opacity="${op}" xml:space="preserve">${esc(ln)}</text>`,
           ),
         );
+        break;
+      }
+      case "stamp": {
+        const s = Math.min(bb.w, bb.h),
+          cx = bb.x + bb.w / 2,
+          cy = bb.y + bb.h / 2;
+        if (el.kind === "number") {
+          const len = String(el.value).length;
+          parts.push(
+            `<circle cx="${cx}" cy="${cy}" r="${s / 2}" fill="${st}" opacity="${op}"/><text x="${cx}" y="${cy + s * 0.03}" text-anchor="middle" dominant-baseline="central" font-weight="700" font-size="${s * (len > 2 ? 0.38 : len > 1 ? 0.46 : 0.56)}" font-family='${FONTS.sans}' fill="${contrastText(st)}" opacity="${op}">${esc(el.value)}</text>`,
+          );
+        } else
+          parts.push(
+            `<text x="${cx}" y="${cy + s * 0.06}" text-anchor="middle" dominant-baseline="central" font-size="${s * 0.86}" font-family='${EMOJI_FONT}' opacity="${op}">${esc(el.value)}</text>`,
+          );
         break;
       }
       case "image":

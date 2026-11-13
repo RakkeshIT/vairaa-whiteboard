@@ -15,9 +15,86 @@ import {
   Circle,
   Pencil,
   MousePointer2,
+  Bold,
+  Italic,
+  Underline,
+  ListOrdered,
 } from "lucide-react";
+import { useState } from "react";
 import { INK } from "../lib/render";
 import { POINTER_TOOLS } from "../lib/cursors";
+import { BULLETS } from "../lib/text";
+
+// ---- stamps: emoji avatars, point markers and reactions
+const em = (s) => [...s.matchAll(/\S+/gu)].map((m) => ({ kind: "emoji", v: m[0] }));
+const NUMBER = { kind: "number" };
+export const STAMP_SETS = {
+  Avatars: em("😀 😃 😎 🤓 🥳 🤔 😍 😂 😴 😮 😢 😡 🧑‍💻 👩‍💻 👨‍🏫 👩‍🏫 👨‍🎓 👩‍🎓 🦸 🧑‍🚀 🤖 👻 🐱 🦁"),
+  Points: [NUMBER, ...em("✅ ❌ ⭐ 📌 📍 ➡️ ⬅️ ⬆️ ⬇️ ✔️ ❗ ❓ ⚠️ 🔴 🟠 🟡 🟢 🔵 🟣 ⚫ 💡 🎯 🔥")],
+  Emoji: em("👍 👎 👏 🙌 🙏 🤝 👀 💪 ❤️ 🎉 🚀 ✨ 💯 🏆 📈 📉 📝 📅 ⏰ 💬 💰 🔒 🌟 ☕"),
+};
+const QUICK = [NUMBER, ...em("✅ ❌ ⭐ 📌 💡 😀 👍 ❤️")];
+
+function StampButton({ item, active, onClick }) {
+  return (
+    <button
+      title={item.kind === "number" ? "Numbered marker 1, 2, 3… (auto)" : item.v}
+      onClick={onClick}
+      className={`h-8 rounded-lg grid place-items-center text-lg leading-none transition hover:scale-110 ${
+        active ? "bg-indigo-100 ring-2 ring-indigo-400 dark:bg-indigo-500/25" : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
+      }`}
+    >
+      {item.kind === "number" ? (
+        <span className="w-6 h-6 rounded-full bg-indigo-500 text-white text-[11px] font-bold grid place-items-center">1</span>
+      ) : (
+        <span style={{ fontFamily: '"Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif' }}>{item.v}</span>
+      )}
+    </button>
+  );
+}
+
+function StampPicker({ values, onStamp, onChange }) {
+  const [tab, setTab] = useState(values.stampKind === "number" ? "Points" : "Avatars");
+  const isActive = (it) => (it.kind === "number" ? values.stampKind === "number" : values.stampKind === "emoji" && values.stamp === it.v);
+  return (
+    <>
+      <Section title="Stamps · tap board to place">
+        <div className="flex gap-1 mb-1">
+          {Object.keys(STAMP_SETS).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`flex-1 h-7 rounded-lg text-[11px] font-semibold transition ${
+                tab === t
+                  ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/25 dark:text-indigo-200"
+                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        <div className="grid grid-cols-6 gap-0.5">
+          {STAMP_SETS[tab].map((it) => (
+            <StampButton key={it.kind + (it.v || "")} item={it} active={isActive(it)} onClick={() => onStamp(it)} />
+          ))}
+        </div>
+      </Section>
+      <Section title="Stamp size">
+        <Seg
+          options={[
+            { v: 32, label: "S" },
+            { v: 56, label: "M" },
+            { v: 96, label: "L" },
+            { v: 160, label: "XL" },
+          ]}
+          value={values.stampSize}
+          onPick={(v) => onChange({ stampSize: v })}
+        />
+      </Section>
+    </>
+  );
+}
 
 export const STROKES = [INK, "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5", "#868e96"];
 export const FILLS = ["transparent", "#ffc9c9", "#ffec99", "#b2f2bb", "#a5d8ff", "#eebefa", "#e9ecef"];
@@ -103,9 +180,25 @@ const DashIcon = ({ dash }) => (
 /**
  * types: element types currently in context (the active tool, or the selected elements).
  */
-export default function PropsPanel({ types, values, onChange, selCount, onLayer, onAlign, onDuplicate, onDelete, dark }) {
+export default function PropsPanel({
+  types,
+  values,
+  onChange,
+  selCount,
+  onLayer,
+  onAlign,
+  onDuplicate,
+  onDelete,
+  dark,
+  editing,
+  onToggleFmt,
+  onList,
+  onStamp,
+}) {
   const has = (...t) => t.some((x) => types.includes(x));
-  const strokeable = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "text");
+  const strokeable = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "text", "stamp");
+  const stampTool = types.length === 1 && types[0] === "stamp" && selCount === 0;
+  const quickStamps = selCount === 0 && !editing && has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond");
   const shapes = has("rect", "ellipse", "diamond");
   const widths = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "eraser");
   const dashes = has("line", "arrow", "rect", "ellipse", "diamond");
@@ -114,6 +207,64 @@ export default function PropsPanel({ types, values, onChange, selCount, onLayer,
 
   return (
     <div className="panel w-[212px] max-h-[calc(100vh-150px)] overflow-y-auto no-scrollbar p-3 flex flex-col gap-3.5 text-zinc-700 dark:text-zinc-200">
+      {stampTool && <StampPicker values={values} onStamp={onStamp} onChange={onChange} />}
+      {quickStamps && (
+        <Section title="Quick stamps · click, then tap board">
+          <div className="grid grid-cols-5 gap-1">
+            {QUICK.map((it) => (
+              <StampButton key={it.kind + (it.v || "")} item={it} onClick={() => onStamp(it, { quick: true })} />
+            ))}
+            <button
+              title="All emoji, avatars and points (S)"
+              onClick={() => onStamp({ kind: values.stampKind, v: values.stamp })}
+              className="h-8 rounded-lg text-[11px] font-semibold bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              More
+            </button>
+          </div>
+        </Section>
+      )}
+      {has("text", "sticky") && (
+        <Section title="Text style">
+          <div className="flex gap-1">
+            {[
+              ["bold", Bold, "Bold (Ctrl+B)"],
+              ["italic", Italic, "Italic (Ctrl+I)"],
+              ["underline", Underline, "Underline (Ctrl+U)"],
+            ].map(([k, Icon, label]) => (
+              <button
+                key={k}
+                title={label}
+                aria-pressed={!!values[k]}
+                onClick={() => onToggleFmt(k)}
+                className={`flex-1 h-8 rounded-lg grid place-items-center transition ${
+                  values[k]
+                    ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/25 dark:text-indigo-200"
+                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                }`}
+              >
+                <Icon size={15} strokeWidth={k === "bold" ? 3 : 2} />
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
+      {has("text", "sticky") && (editing || selCount > 0) && (
+        <Section title="Points · Enter continues">
+          <div className="grid grid-cols-4 gap-1">
+            {[...BULLETS, "num"].map((b) => (
+              <button
+                key={b}
+                title={b === "num" ? "Numbered 1. 2. 3. (Ctrl+Shift+7)" : b === "•" ? "Bullets (Ctrl+Shift+8)" : `${b} points`}
+                onClick={() => onList(b)}
+                className="h-8 rounded-lg text-sm font-semibold bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                {b === "num" ? <ListOrdered size={15} className="mx-auto" /> : b}
+              </button>
+            ))}
+          </div>
+        </Section>
+      )}
       {selCount === 0 && has(...POINTER_TOOLS) && (
         <Section title="Pointer · press .">
           <Seg

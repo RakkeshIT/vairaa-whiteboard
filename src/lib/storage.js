@@ -18,25 +18,105 @@ export function isValidDoc(d) {
   );
 }
 
+const fixCurrent = (d) => (d.pages.some((p) => p.id === d.current) ? d : { ...d, current: d.pages[0].id });
+
+/** Fast synchronous copy (localStorage) — used for the very first paint. */
 export function loadDoc() {
   try {
     const d = JSON.parse(localStorage.getItem(DOC_KEY));
-    if (!isValidDoc(d)) return null;
-    if (!d.pages.some((p) => p.id === d.current)) d.current = d.pages[0].id;
-    return d;
+    return isValidDoc(d) ? fixCurrent(d) : null;
   } catch {
     return null;
   }
 }
 
-/** Returns false when the browser storage is full. */
-export function saveDoc(doc) {
+// ---- IndexedDB: holds far more than localStorage (~5 MB), so boards with images never stop saving.
+const DB_NAME = "pro-whiteboard";
+const STORE = "kv";
+let dbPromise = null;
+function openDB() {
+  if (!dbPromise) {
+    dbPromise = new Promise((res, rej) => {
+      if (!window.indexedDB) return rej(new Error("IndexedDB unavailable"));
+      const r = indexedDB.open(DB_NAME, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    dbPromise.catch(() => (dbPromise = null));
+  }
+  return dbPromise;
+}
+async function idb(mode, fn) {
+  const db = await openDB();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, mode);
+    const req = fn(tx.objectStore(STORE));
+    tx.oncomplete = () => res(req?.result);
+    tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error);
+  });
+}
+
+/** Identifies this browser tab, so other tabs can pick up its saves. */
+export const TAB_ID = uid();
+export const REV_KEY = "pro-whiteboard:rev";
+
+/** Newest valid copy from IndexedDB or localStorage. */
+export async function loadDocAsync() {
+  let fromDb = null;
   try {
-    localStorage.setItem(DOC_KEY, JSON.stringify(doc));
+    fromDb = await idb("readonly", (s) => s.get("doc"));
+  } catch {
+    /* fall back to localStorage */
+  }
+  const copies = [fromDb, loadDoc()].filter(isValidDoc).map(fixCurrent);
+  copies.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  return copies[0] || null;
+}
+
+function writeLocal(d) {
+  try {
+    localStorage.setItem(DOC_KEY, JSON.stringify(d));
     return true;
   } catch {
+    // Too big for localStorage: drop the stale copy so it can never win over IndexedDB.
+    try {
+      localStorage.removeItem(DOC_KEY);
+    } catch {
+      /* ignore */
+    }
     return false;
   }
+}
+function signalTabs() {
+  try {
+    localStorage.setItem(REV_KEY, JSON.stringify({ tab: TAB_ID, t: Date.now() }));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Save to both stores. Resolves false only if neither store accepted the board. */
+export async function persistDoc(doc) {
+  const d = { ...doc, savedAt: Date.now() };
+  const local = writeLocal(d);
+  let db = false;
+  try {
+    await idb("readwrite", (s) => s.put(d, "doc"));
+    db = true;
+  } catch {
+    /* ignore */
+  }
+  signalTabs();
+  return local || db;
+}
+
+/** Synchronous best-effort save for page close / reload (IndexedDB write is fire-and-forget). */
+export function persistDocNow(doc) {
+  const d = { ...doc, savedAt: Date.now() };
+  writeLocal(d);
+  idb("readwrite", (s) => s.put(d, "doc")).catch(() => {});
 }
 
 export function loadStyle() {

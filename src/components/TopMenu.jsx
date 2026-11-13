@@ -46,7 +46,15 @@ export default function TopMenu({ doc, onAction }) {
       </button>
       {open && (
         <div className="panel absolute left-0 top-13 w-64 p-1.5 flex flex-col gap-0.5 z-50">
-          <Item icon={FolderOpen} label="Open board…" hint="Ctrl+O" action="open" />
+          <div className="flex items-center gap-2.5 px-3 pt-2 pb-2.5">
+            <img src="/logo.svg" alt="" className="w-8 h-8" />
+            <div className="leading-tight">
+              <div className="text-sm font-bold text-zinc-800 dark:text-zinc-100">Vairaa Board</div>
+              <div className="text-[11px] text-zinc-400">Autosaved in this browser</div>
+            </div>
+          </div>
+          <div className="h-px bg-zinc-200 dark:bg-zinc-700 mb-1" />
+          <Item icon={FolderOpen} label="Import board (.json)…" hint="Ctrl+O" action="open" />
           <Item icon={Save} label="Save board (.json)" hint="Ctrl+S" action="save" />
           <Item icon={ImageDown} label="Export PNG" hint="Ctrl+E" action="png" />
           <Item icon={FileCode2} label="Export SVG" action="svg" />

@@ -14,6 +14,18 @@ function brushPx(tool, sw, zoom) {
   return Math.max(4, Math.min(56, world * zoom));
 }
 
+/** Stamp tool cursor: a preview of the emoji / number marker that will be placed. */
+export function stampCursor(style, dark) {
+  const color = colorFor(style.stroke, dark);
+  const body =
+    style.stampKind === "number"
+      ? `<circle cx="16" cy="16" r="12" fill="${color}" stroke="#fff" stroke-width="2"/><text x="16" y="21" text-anchor="middle" font-family="Arial" font-weight="700" font-size="14" fill="#fff">#</text>`
+      : `<text x="16" y="24" text-anchor="middle" font-size="22" font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, sans-serif">${style.stamp
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")}</text>`;
+  return svgCursor(wrap(32, body), 16, 16, "copy");
+}
+
 export function pointerCSS({ kind, tool, stroke, strokeWidth, zoom, dark }) {
   const color = colorFor(stroke, dark);
   switch (kind) {
