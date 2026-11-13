@@ -1,0 +1,533 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pro Whiteboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      canvas {
+        touch-action: none;
+      }
+      .grid-bg {
+        background-image:
+          linear-gradient(#e5e7eb 1px, transparent 1px),
+          linear-gradient(90deg, #e5e7eb 1px, transparent 1px);
+        background-size: 32px 32px;
+      }
+      .dots-bg {
+        background-image: radial-gradient(#cbd5e1 1.5px, transparent 1.5px);
+        background-size: 24px 24px;
+      }
+      .lines-bg {
+        background-image: linear-gradient(#dbeafe 1px, transparent 1px);
+        background-size: 100% 36px;
+      }
+      .tool.on {
+        background: linear-gradient(135deg, #6366f1, #a855f7);
+        color: #fff;
+        box-shadow: 0 4px 14px #6366f166;
+      }
+    </style>
+  </head>
+  <body class="overflow-hidden select-none bg-white">
+    <div id="wrap" class="fixed inset-0 grid-bg bg-white">
+      <canvas id="c" class="absolute inset-0"></canvas>
+    </div>
+
+    <!-- Main toolbar -->
+    <div
+      class="fixed top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 px-3 py-2 rounded-2xl bg-white/80 backdrop-blur-xl shadow-2xl ring-1 ring-black/5"
+    >
+      <span
+        class="px-2 font-bold bg-gradient-to-r from-indigo-500 to-fuchsia-500 bg-clip-text text-transparent"
+        >Board</span
+      >
+      <div class="w-px h-7 bg-gray-200 mx-1"></div>
+      <button
+        data-t="pen"
+        title="Pen (P)"
+        class="tool on w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        ✏️
+      </button>
+      <button
+        data-t="hl"
+        title="Highlighter (H)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        🖍️
+      </button>
+      <button
+        data-t="line"
+        title="Line (L)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        ╱
+      </button>
+      <button
+        data-t="arrow"
+        title="Arrow (A)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        ➜
+      </button>
+      <button
+        data-t="rect"
+        title="Box (R)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        ▢
+      </button>
+      <button
+        data-t="circle"
+        title="Circle (C)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        ◯
+      </button>
+      <button
+        data-t="text"
+        title="Text (T)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition font-serif font-bold"
+      >
+        T
+      </button>
+      <button
+        data-t="eraser"
+        title="Eraser (E)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        🧽
+      </button>
+      <button
+        data-t="laser"
+        title="Laser pointer (K)"
+        class="tool w-10 h-10 rounded-xl hover:bg-gray-100 transition"
+      >
+        🔴
+      </button>
+      <div class="w-px h-7 bg-gray-200 mx-1"></div>
+      <button
+        id="undo"
+        title="Undo (Ctrl+Z)"
+        class="w-10 h-10 rounded-xl hover:bg-gray-100"
+      >
+        ↶
+      </button>
+      <button
+        id="redo"
+        title="Redo (Ctrl+Y)"
+        class="w-10 h-10 rounded-xl hover:bg-gray-100"
+      >
+        ↷
+      </button>
+      <button
+        id="clr"
+        title="Clear"
+        class="w-10 h-10 rounded-xl hover:bg-red-50 text-red-500"
+      >
+        🗑️
+      </button>
+      <button
+        id="save"
+        title="Save PNG"
+        class="px-3 h-10 rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 text-white font-semibold shadow-lg hover:scale-105 transition"
+      >
+        Save
+      </button>
+      <button
+        id="fs"
+        title="Fullscreen (F)"
+        class="w-10 h-10 rounded-xl hover:bg-gray-100"
+      >
+        ⛶
+      </button>
+    </div>
+
+    <!-- Side panel: colors, size, background -->
+    <div
+      class="fixed left-4 top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-2 p-3 rounded-2xl bg-white/80 backdrop-blur-xl shadow-2xl ring-1 ring-black/5"
+    >
+      <div id="pal" class="flex flex-col gap-2"></div>
+      <input
+        id="col"
+        type="color"
+        value="#111827"
+        class="w-8 h-8 rounded-full cursor-pointer"
+      />
+      <div class="w-8 h-px bg-gray-200 my-1"></div>
+      <input
+        id="sz"
+        type="range"
+        min="1"
+        max="40"
+        value="4"
+        class="h-28 accent-indigo-500"
+        style="writing-mode: vertical-lr; direction: rtl"
+      />
+      <span id="szv" class="text-xs text-gray-500">4</span>
+      <div class="w-8 h-px bg-gray-200 my-1"></div>
+      <button
+        data-bg="grid"
+        class="bgb w-8 h-8 rounded-lg ring-1 ring-gray-300 grid-bg"
+        title="Grid"
+      ></button>
+      <button
+        data-bg="dots"
+        class="bgb w-8 h-8 rounded-lg ring-1 ring-gray-300 dots-bg"
+        title="Dots"
+      ></button>
+      <button
+        data-bg="lines"
+        class="bgb w-8 h-8 rounded-lg ring-1 ring-gray-300 lines-bg"
+        title="Ruled"
+      ></button>
+      <button
+        data-bg="plain"
+        class="bgb w-8 h-8 rounded-lg ring-1 ring-gray-300 bg-white"
+        title="Plain"
+      ></button>
+      <button
+        data-bg="dark"
+        class="bgb w-8 h-8 rounded-lg ring-1 ring-gray-300 bg-slate-900"
+        title="Blackboard"
+      ></button>
+    </div>
+
+    <div
+      class="fixed bottom-4 right-4 z-20 text-xs text-gray-400 bg-white/70 backdrop-blur px-3 py-1 rounded-full shadow"
+    >
+      Shift = straight shapes · Ctrl+Z undo · F fullscreen
+    </div>
+    <input
+      id="txt"
+      class="hidden fixed z-30 bg-transparent outline-none border-b-2 border-indigo-400 text-2xl"
+      placeholder="Type & Enter"
+    />
+
+    <script>
+      const c = document.getElementById("c"),
+        x = c.getContext("2d"),
+        wrap = document.getElementById("wrap");
+      let tool = "pen",
+        down = false,
+        pts = [],
+        sx,
+        sy,
+        snap,
+        hist = [],
+        fut = [],
+        dark = false,
+        laser = [];
+      const dpr = devicePixelRatio || 1,
+        $ = (id) => document.getElementById(id);
+      function fit() {
+        const old = document.createElement("canvas");
+        old.width = c.width;
+        old.height = c.height;
+        old.getContext("2d").drawImage(c, 0, 0);
+        c.width = innerWidth * dpr;
+        c.height = innerHeight * dpr;
+        c.style.width = innerWidth + "px";
+        c.style.height = innerHeight + "px";
+        x.setTransform(1, 0, 0, 1, 0, 0);
+        x.drawImage(old, 0, 0);
+        x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      fit();
+      addEventListener("resize", fit);
+      const colors = [
+        "#111827",
+        "#ef4444",
+        "#f97316",
+        "#eab308",
+        "#22c55e",
+        "#3b82f6",
+        "#a855f7",
+        "#ffffff",
+      ];
+      colors.forEach((k) => {
+        const b = document.createElement("button");
+        b.className =
+          "w-7 h-7 rounded-full ring-2 ring-white shadow hover:scale-110 transition";
+        b.style.background = k;
+        b.onclick = () => ($("col").value = k);
+        $("pal").appendChild(b);
+      });
+      $("sz").oninput = () => ($("szv").textContent = $("sz").value);
+      const col = () => $("col").value,
+        sz = () => +$("sz").value;
+      function setTool(t) {
+        tool = t;
+        document
+          .querySelectorAll(".tool")
+          .forEach((b) => b.classList.toggle("on", b.dataset.t === t));
+        c.style.cursor = t === "text" ? "text" : "crosshair";
+      }
+      document
+        .querySelectorAll(".tool")
+        .forEach((b) => (b.onclick = () => setTool(b.dataset.t)));
+      document.querySelectorAll(".bgb").forEach(
+        (b) =>
+          (b.onclick = () => {
+            const v = b.dataset.bg;
+            dark = v === "dark";
+            wrap.className =
+              "fixed inset-0 " +
+              {
+                grid: "grid-bg bg-white",
+                dots: "dots-bg bg-white",
+                lines: "lines-bg bg-white",
+                plain: "bg-white",
+                dark: "bg-slate-900",
+              }[v];
+            if (dark && col() === "#111827") $("col").value = "#ffffff";
+            if (!dark && col() === "#ffffff") $("col").value = "#111827";
+          }),
+      );
+      function push() {
+        hist.push(x.getImageData(0, 0, c.width, c.height));
+        if (hist.length > 60) hist.shift();
+        fut = [];
+      }
+      function put(img) {
+        x.setTransform(1, 0, 0, 1, 0, 0);
+        x.putImageData(img, 0, 0);
+        x.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      function shape(ex, ey, shift) {
+        x.strokeStyle = col();
+        x.lineWidth = sz();
+        x.lineCap = "round";
+        x.lineJoin = "round";
+        x.globalAlpha = 1;
+        x.globalCompositeOperation = "source-over";
+        x.beginPath();
+        if (shift && (tool === "line" || tool === "arrow")) {
+          const an =
+              Math.round(Math.atan2(ey - sy, ex - sx) / (Math.PI / 4)) *
+              (Math.PI / 4),
+            d = Math.hypot(ex - sx, ey - sy);
+          ex = sx + d * Math.cos(an);
+          ey = sy + d * Math.sin(an);
+        }
+        if (shift && (tool === "rect" || tool === "circle")) {
+          const d = Math.max(Math.abs(ex - sx), Math.abs(ey - sy));
+          ex = sx + Math.sign(ex - sx) * d;
+          ey = sy + Math.sign(ey - sy) * d;
+        }
+        if (tool === "line" || tool === "arrow") {
+          x.moveTo(sx, sy);
+          x.lineTo(ex, ey);
+          if (tool === "arrow") {
+            const an = Math.atan2(ey - sy, ex - sx),
+              h = 12 + sz() * 2.5;
+            x.moveTo(ex, ey);
+            x.lineTo(
+              ex - h * Math.cos(an - 0.45),
+              ey - h * Math.sin(an - 0.45),
+            );
+            x.moveTo(ex, ey);
+            x.lineTo(
+              ex - h * Math.cos(an + 0.45),
+              ey - h * Math.sin(an + 0.45),
+            );
+          }
+        }
+        if (tool === "rect")
+          x.roundRect
+            ? x.roundRect(sx, sy, ex - sx, ey - sy, 6)
+            : x.rect(sx, sy, ex - sx, ey - sy);
+        if (tool === "circle")
+          x.ellipse(
+            (sx + ex) / 2,
+            (sy + ey) / 2,
+            Math.abs(ex - sx) / 2,
+            Math.abs(ey - sy) / 2,
+            0,
+            0,
+            Math.PI * 2,
+          );
+        x.stroke();
+      }
+      c.onpointerdown = (e) => {
+        if (e.button === 2) return;
+        sx = e.offsetX;
+        sy = e.offsetY;
+        if (tool === "text") {
+          const t = $("txt");
+          t.classList.remove("hidden");
+          t.style.left = sx + "px";
+          t.style.top = sy - 20 + "px";
+          t.style.color = col();
+          t.style.fontSize = 14 + sz() * 2 + "px";
+          t.value = "";
+          setTimeout(() => t.focus(), 0);
+          return;
+        }
+        if (tool === "laser") {
+          down = true;
+          laser = [];
+          c.setPointerCapture(e.pointerId);
+          snap = x.getImageData(0, 0, c.width, c.height);
+          return;
+        }
+        push();
+        down = true;
+        pts = [{ x: sx, y: sy, p: e.pressure || 0.5 }];
+        snap = x.getImageData(0, 0, c.width, c.height);
+        c.setPointerCapture(e.pointerId);
+      };
+      c.onpointermove = (e) => {
+        if (!down) return;
+        const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+        if (tool === "laser") {
+          for (const v of evs) laser.push({ x: v.offsetX, y: v.offsetY });
+          return;
+        }
+        if (tool === "pen" || tool === "hl" || tool === "eraser") {
+          x.lineCap = "round";
+          x.lineJoin = "round";
+          x.globalCompositeOperation =
+            tool === "eraser"
+              ? "destination-out"
+              : tool === "hl"
+                ? "multiply"
+                : "source-over";
+          x.globalAlpha = tool === "hl" ? 0.35 : 1;
+          x.strokeStyle = col();
+          for (const v of evs) {
+            pts.push({ x: v.offsetX, y: v.offsetY, p: v.pressure || 0.5 });
+            const n = pts.length;
+            if (n < 3) continue;
+            const a = pts[n - 3],
+              b = pts[n - 2],
+              d = pts[n - 1];
+            x.lineWidth =
+              tool === "eraser"
+                ? sz() * 5
+                : tool === "hl"
+                  ? sz() * 4
+                  : sz() * (0.35 + b.p * 1.3);
+            x.beginPath();
+            x.moveTo((a.x + b.x) / 2, (a.y + b.y) / 2);
+            x.quadraticCurveTo(b.x, b.y, (b.x + d.x) / 2, (b.y + d.y) / 2);
+            x.stroke();
+          }
+          x.globalAlpha = 1;
+          x.globalCompositeOperation = "source-over";
+        } else {
+          put(snap);
+          shape(e.offsetX, e.offsetY, e.shiftKey);
+        }
+      };
+      c.onpointerup = () => {
+        down = false;
+        if (tool === "laser") {
+          const fade = () => {
+            laser.splice(0, 4);
+            put(snap);
+            drawLaser();
+            if (laser.length) requestAnimationFrame(fade);
+          };
+          fade();
+        }
+      };
+      function drawLaser() {
+        if (laser.length < 2) return;
+        x.save();
+        x.strokeStyle = "#ef4444";
+        x.shadowColor = "#ef4444";
+        x.shadowBlur = 15;
+        x.lineWidth = 4;
+        x.lineCap = "round";
+        x.beginPath();
+        x.moveTo(laser[0].x, laser[0].y);
+        laser.forEach((p) => x.lineTo(p.x, p.y));
+        x.stroke();
+        x.restore();
+      }
+      (function loop() {
+        if (down && tool === "laser") {
+          put(snap);
+          if (laser.length > 40) laser.splice(0, laser.length - 40);
+          drawLaser();
+        }
+        requestAnimationFrame(loop);
+      })();
+      $("txt").onkeydown = (e) => {
+        if (e.key === "Enter") {
+          const t = $("txt");
+          if (t.value) {
+            push();
+            x.fillStyle = col();
+            x.font = `${14 + sz() * 2}px 'Segoe UI',sans-serif`;
+            x.fillText(t.value, sx, sy);
+          }
+          t.classList.add("hidden");
+        }
+        if (e.key === "Escape") $("txt").classList.add("hidden");
+        e.stopPropagation();
+      };
+      $("undo").onclick = () => {
+        if (hist.length) {
+          fut.push(x.getImageData(0, 0, c.width, c.height));
+          put(hist.pop());
+        }
+      };
+      $("redo").onclick = () => {
+        if (fut.length) {
+          hist.push(x.getImageData(0, 0, c.width, c.height));
+          put(fut.pop());
+        }
+      };
+      $("clr").onclick = () => {
+        push();
+        x.clearRect(0, 0, c.width, c.height);
+      };
+      $("save").onclick = () => {
+        const o = document.createElement("canvas");
+        o.width = c.width;
+        o.height = c.height;
+        const g = o.getContext("2d");
+        g.fillStyle = dark ? "#0f172a" : "#ffffff";
+        g.fillRect(0, 0, o.width, o.height);
+        g.drawImage(c, 0, 0);
+        const a = document.createElement("a");
+        a.download = "board-" + Date.now() + ".png";
+        a.href = o.toDataURL();
+        a.click();
+      };
+      $("fs").onclick = () =>
+        document.fullscreenElement
+          ? document.exitFullscreen()
+          : document.documentElement.requestFullscreen();
+      c.oncontextmenu = (e) => e.preventDefault();
+      addEventListener("keydown", (e) => {
+        if (e.ctrlKey && e.key.toLowerCase() === "z") {
+          e.preventDefault();
+          $("undo").click();
+          return;
+        }
+        if (e.ctrlKey && e.key.toLowerCase() === "y") {
+          e.preventDefault();
+          $("redo").click();
+          return;
+        }
+        const m = {
+          p: "pen",
+          h: "hl",
+          l: "line",
+          a: "arrow",
+          r: "rect",
+          c: "circle",
+          t: "text",
+          e: "eraser",
+          k: "laser",
+        };
+        if (m[e.key]) setTool(m[e.key]);
+        if (e.key === "f") $("fs").click();
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+canvas {
+  touch-action: none;
+  display: block;
+}
+
+.panel {
+  @apply rounded-2xl bg-white/90 dark:bg-zinc-900/90 backdrop-blur-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] ring-1 ring-black/5 dark:ring-white/10;
+}
+
+.icon-btn {
+  @apply inline-flex items-center justify-center w-9 h-9 shrink-0 rounded-xl text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition disabled:opacity-35 disabled:pointer-events-none;
+}
+
+.icon-btn.on {
+  @apply bg-indigo-100 text-indigo-700 dark:bg-indigo-500/25 dark:text-indigo-200;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
