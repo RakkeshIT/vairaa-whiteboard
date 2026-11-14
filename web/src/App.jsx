@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Palette, HelpCircle, ImageDown, X } from "lucide-react";
+import { Palette, HelpCircle, ImageDown, X, User as UserIcon } from "lucide-react";
 import Toolbar from "./components/Toolbar";
 import PropsPanel from "./components/PropsPanel";
 import TopMenu from "./components/TopMenu";
 import { ZoomControls, PageTabs } from "./components/BottomBar";
 import HelpModal from "./components/HelpModal";
+import AuthModal from "./components/AuthModal";
+import { authApi, whiteboardApi, getStoredUser, getAuthToken } from "./lib/api";
 import * as G from "./lib/elements";
 import {
   drawElement,
@@ -98,6 +100,12 @@ export default function App() {
   const [help, setHelp] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => window.innerWidth >= 768);
   const [, setHistTick] = useState(0);
+
+  // Per-user authentication & cloud whiteboard sync states
+  const [user, setUser] = useState(() => getStoredUser());
+  const [authOpen, setAuthOpen] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState("synced");
+  const [currentBoardId, setCurrentBoardId] = useState(null);
 
   const page = doc.pages.find((p) => p.id === doc.current) || doc.pages[0];
   const elements = page.elements;
@@ -1202,6 +1210,65 @@ export default function App() {
     };
   }, []);
 
+  // 1b) Authenticated User: Load cloud whiteboard from MongoDB Atlas
+  useEffect(() => {
+    if (!getAuthToken()) return;
+
+    authApi
+      .getMe()
+      .then((res) => {
+        setUser(res.user);
+        return whiteboardApi.loadBoard();
+      })
+      .then((boardRes) => {
+        if (boardRes?.whiteboard?.doc && Store.isValidDoc(boardRes.whiteboard.doc)) {
+          remoteDoc.current = boardRes.whiteboard.doc;
+          setDoc(boardRes.whiteboard.doc);
+          setCurrentBoardId(boardRes.whiteboard.id);
+        }
+      })
+      .catch((err) => {
+        console.warn("Cloud session note:", err.message);
+      });
+
+    const handleExpired = () => {
+      setUser(null);
+      setCurrentBoardId(null);
+      showToast("Session expired. Please sign in again.");
+    };
+    window.addEventListener("vairaa:auth-expired", handleExpired);
+    return () => window.removeEventListener("vairaa:auth-expired", handleExpired);
+  }, []);
+
+  const handleAuthSuccess = async (newUser) => {
+    setUser(newUser);
+    showToast(`Signed in as ${newUser.name}`);
+    setCloudStatus("saving");
+    try {
+      const boardRes = await whiteboardApi.loadBoard();
+      if (boardRes?.whiteboard?.doc && Store.isValidDoc(boardRes.whiteboard.doc)) {
+        remoteDoc.current = boardRes.whiteboard.doc;
+        setDoc(boardRes.whiteboard.doc);
+        setCurrentBoardId(boardRes.whiteboard.id);
+        showToast(`Loaded personal cloud whiteboard for ${newUser.name}`);
+      } else {
+        // Initial cloud save for this user
+        await whiteboardApi.saveBoard(doc, `${newUser.name}'s Board`);
+      }
+      setCloudStatus("synced");
+    } catch (e) {
+      console.error("Failed to load user cloud board:", e);
+      setCloudStatus("offline");
+    }
+  };
+
+  const handleLogout = () => {
+    authApi.logout();
+    setUser(null);
+    setCurrentBoardId(null);
+    showToast("Signed out. Whiteboard autosaves locally in this browser.");
+  };
+
   const flushSave = () => {
     const d = pendingSave.current;
     if (!d) return;
@@ -1212,6 +1279,23 @@ export default function App() {
         showToast("Could not save in this browser — use Save board to keep your work");
       }
     });
+
+    // Cloud auto-sync per user to MongoDB Atlas
+    if (getAuthToken()) {
+      setCloudStatus("saving");
+      whiteboardApi
+        .saveBoard(d, undefined, currentBoardId)
+        .then((res) => {
+          if (res?.whiteboard?.id && !currentBoardId) {
+            setCurrentBoardId(res.whiteboard.id);
+          }
+          setCloudStatus("synced");
+        })
+        .catch((err) => {
+          console.warn("Cloud save warning:", err.message);
+          setCloudStatus("offline");
+        });
+    }
   };
   useEffect(() => {
     if (!loaded || doc === remoteDoc.current) return;
@@ -1406,8 +1490,50 @@ export default function App() {
 
       {/* top row */}
       <div className="fixed top-3 left-3 right-3 z-30 flex items-start justify-between gap-2 pointer-events-none">
-        <div className="pointer-events-auto">
-          <TopMenu doc={doc} onAction={menuAction} />
+        <div className="pointer-events-auto flex items-center gap-2">
+          <TopMenu
+            doc={doc}
+            onAction={menuAction}
+            user={user}
+            onOpenAuth={() => setAuthOpen(true)}
+            onLogout={handleLogout}
+            cloudStatus={cloudStatus}
+          />
+          {user ? (
+            <div
+              className="panel flex items-center gap-2.5 h-11 px-3.5 rounded-2xl text-xs font-medium text-zinc-700 dark:text-zinc-200 cursor-default"
+              title={`Logged in as ${user.name} (${user.email}) - Isolated Whiteboard`}
+            >
+              <div className="w-6 h-6 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-[10px] shrink-0">
+                {user.name.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="hidden sm:block leading-tight text-left">
+                <div className="font-semibold text-zinc-800 dark:text-zinc-100 truncate max-w-[120px]">
+                  {user.name}
+                </div>
+                {user.company && (
+                  <div className="text-[10px] text-zinc-400 truncate max-w-[120px]">
+                    {user.company}
+                  </div>
+                )}
+              </div>
+              <div
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  cloudStatus === "saving" ? "bg-amber-400 animate-ping" : "bg-emerald-500"
+                }`}
+                title={cloudStatus === "saving" ? "Syncing to cloud..." : "Cloud synced to Atlas"}
+              />
+            </div>
+          ) : (
+            <button
+              onClick={() => setAuthOpen(true)}
+              className="panel flex items-center gap-2 h-11 px-3.5 rounded-2xl text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition cursor-pointer"
+              title="Sign In with OTP to save your whiteboard per user"
+            >
+              <UserIcon size={15} />
+              <span className="hidden sm:inline">Sign In / Cloud Sync</span>
+            </button>
+          )}
         </div>
         <div className="pointer-events-auto lg:absolute lg:left-1/2 lg:-translate-x-1/2">
           <Toolbar tool={tool} onTool={setTool} />
@@ -1490,6 +1616,11 @@ export default function App() {
         </div>
       )}
       {help && <HelpModal onClose={() => setHelp(false)} />}
+      <AuthModal
+        isOpen={authOpen}
+        onClose={() => setAuthOpen(false)}
+        onAuthSuccess={handleAuthSuccess}
+      />
 
       <input
         ref={fileImg}

@@ -1,23 +1,13 @@
 {
-  "name": "pro-whiteboard",
+  "name": "vairaa-whiteboard-monorepo",
+  "version": "1.0.0",
   "private": true,
-  "version": "2.0.0",
-  "type": "module",
+  "description": "Vairaa Whiteboard Monorepo (Web Frontend & Express Backend with MongoDB Atlas OTP Auth)",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "lucide-react": "^0.460.0",
-    "perfect-freehand": "^1.2.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "^4.0.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "tailwindcss": "^4.0.0",
-    "vite": "^6.0.0"
+    "start:server": "cd server && npm start",
+    "dev:server": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev",
+    "build:web": "cd web && npm run build"
   }
 }
+
