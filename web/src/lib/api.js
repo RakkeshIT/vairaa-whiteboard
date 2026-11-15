@@ -1,68 +1,37 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+import { createAuthClient } from "better-auth/react";
+import { emailOTPClient } from "better-auth/client/plugins";
 
-const TOKEN_KEY = "vairaa_auth_token";
-const USER_KEY = "vairaa_auth_user";
+// Relative by default: /api is proxied to the backend (Vite in dev, Vercel rewrites in prod),
+// so the httpOnly session cookie is first-party
+const API_BASE = import.meta.env.VITE_API_URL || "/api";
 
-export const getAuthToken = () => {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-};
+/* ====================================================
+   AUTHENTICATION (Better Auth, email OTP + cookie session)
+==================================================== */
 
-export const setAuthSession = (token, user) => {
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
-  } catch (e) {
-    console.error("Failed to store auth session:", e);
-  }
-};
-
-export const getStoredUser = () => {
-  try {
-    const raw = localStorage.getItem(USER_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-};
-
-export const clearAuthSession = () => {
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-  } catch (e) {
-    console.error("Failed to clear auth session:", e);
-  }
-};
+export const authClient = createAuthClient({
+  baseURL: new URL(`${API_BASE}/auth`, window.location.origin).href,
+  plugins: [emailOTPClient()],
+});
 
 /**
- * Universal fetch wrapper with automatic JWT header
+ * Universal fetch wrapper; the session cookie is sent automatically
  */
 async function apiRequest(endpoint, options = {}) {
-  const token = getAuthToken();
-  const headers = {
-    "Content-Type": "application/json",
-    ...(options.headers || {}),
-  };
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
   const res = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
-    headers,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
   });
 
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    if (res.status === 401 && token) {
-      // Session has expired or is invalid
-      clearAuthSession();
+    if (res.status === 401) {
+      // Session has expired or was revoked
       window.dispatchEvent(new CustomEvent("vairaa:auth-expired"));
     }
     const error = new Error(data.message || `Request failed with status ${res.status}`);
@@ -73,43 +42,6 @@ async function apiRequest(endpoint, options = {}) {
 
   return data;
 }
-
-/* ====================================================
-   AUTHENTICATION API
-==================================================== */
-
-export const authApi = {
-  // Step 1: Send OTP to email
-  sendOtp: async (email) => {
-    return apiRequest("/auth/send-otp", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    });
-  },
-
-  // Step 2: Verify OTP (with name & company if new user)
-  verifyOtp: async ({ email, otp, name, company }) => {
-    const data = await apiRequest("/auth/verify-otp", {
-      method: "POST",
-      body: JSON.stringify({ email, otp, name, company }),
-    });
-
-    if (data.token && data.user) {
-      setAuthSession(data.token, data.user);
-    }
-
-    return data;
-  },
-
-  // Get current logged-in user profile
-  getMe: async () => {
-    return apiRequest("/auth/me");
-  },
-
-  logout: () => {
-    clearAuthSession();
-  },
-};
 
 /* ====================================================
    WHITEBOARD API (Per-User Storage & Isolation)

@@ -6,7 +6,7 @@ import TopMenu from "./components/TopMenu";
 import { ZoomControls, PageTabs } from "./components/BottomBar";
 import HelpModal from "./components/HelpModal";
 import AuthModal from "./components/AuthModal";
-import { authApi, whiteboardApi, getStoredUser, getAuthToken } from "./lib/api";
+import { authClient, whiteboardApi } from "./lib/api";
 import * as G from "./lib/elements";
 import {
   drawElement,
@@ -102,7 +102,9 @@ export default function App() {
   const [, setHistTick] = useState(0);
 
   // Per-user authentication & cloud whiteboard sync states
-  const [user, setUser] = useState(() => getStoredUser());
+  // Session lives in an httpOnly cookie; useSession restores it on refresh and reacts to sign-in/out
+  const { data: session, refetch: refetchSession } = authClient.useSession();
+  const user = session?.user ?? null;
   const [authOpen, setAuthOpen] = useState(false);
   const [cloudStatus, setCloudStatus] = useState("synced");
   const [currentBoardId, setCurrentBoardId] = useState(null);
@@ -1210,61 +1212,59 @@ export default function App() {
     };
   }, []);
 
-  // 1b) Authenticated User: Load cloud whiteboard from MongoDB Atlas
+  // 1b) Authenticated User (sign-in or restored session): Load cloud whiteboard from MongoDB Atlas
   useEffect(() => {
-    if (!getAuthToken()) return;
+    if (!user?.id) return;
+    let alive = true;
 
-    authApi
-      .getMe()
-      .then((res) => {
-        setUser(res.user);
-        return whiteboardApi.loadBoard();
-      })
-      .then((boardRes) => {
+    setCloudStatus("saving");
+    whiteboardApi
+      .loadBoard()
+      .then(async (boardRes) => {
+        if (!alive) return;
         if (boardRes?.whiteboard?.doc && Store.isValidDoc(boardRes.whiteboard.doc)) {
           remoteDoc.current = boardRes.whiteboard.doc;
           setDoc(boardRes.whiteboard.doc);
           setCurrentBoardId(boardRes.whiteboard.id);
+        } else {
+          // Initial cloud save for this user
+          await whiteboardApi.saveBoard(doc, `${user.name}'s Board`);
         }
+        setCloudStatus("synced");
       })
       .catch((err) => {
         console.warn("Cloud session note:", err.message);
+        if (alive) setCloudStatus("offline");
       });
 
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // A protected request returned 401: the session expired or was revoked elsewhere
+  useEffect(() => {
     const handleExpired = () => {
-      setUser(null);
+      refetchSession();
       setCurrentBoardId(null);
       showToast("Session expired. Please sign in again.");
     };
     window.addEventListener("vairaa:auth-expired", handleExpired);
     return () => window.removeEventListener("vairaa:auth-expired", handleExpired);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleAuthSuccess = async (newUser) => {
-    setUser(newUser);
+  const handleAuthSuccess = (newUser) => {
     showToast(`Signed in as ${newUser.name}`);
-    setCloudStatus("saving");
-    try {
-      const boardRes = await whiteboardApi.loadBoard();
-      if (boardRes?.whiteboard?.doc && Store.isValidDoc(boardRes.whiteboard.doc)) {
-        remoteDoc.current = boardRes.whiteboard.doc;
-        setDoc(boardRes.whiteboard.doc);
-        setCurrentBoardId(boardRes.whiteboard.id);
-        showToast(`Loaded personal cloud whiteboard for ${newUser.name}`);
-      } else {
-        // Initial cloud save for this user
-        await whiteboardApi.saveBoard(doc, `${newUser.name}'s Board`);
-      }
-      setCloudStatus("synced");
-    } catch (e) {
-      console.error("Failed to load user cloud board:", e);
-      setCloudStatus("offline");
-    }
   };
 
-  const handleLogout = () => {
-    authApi.logout();
-    setUser(null);
+  const handleLogout = async () => {
+    const { error } = await authClient.signOut();
+    if (error) {
+      showToast("Sign out failed. Please try again.");
+      return;
+    }
     setCurrentBoardId(null);
     showToast("Signed out. Whiteboard autosaves locally in this browser.");
   };
@@ -1281,7 +1281,7 @@ export default function App() {
     });
 
     // Cloud auto-sync per user to MongoDB Atlas
-    if (getAuthToken()) {
+    if (user) {
       setCloudStatus("saving");
       whiteboardApi
         .saveBoard(d, undefined, currentBoardId)

@@ -1,21 +1,18 @@
-import dotenv from "dotenv";
-dotenv.config();
+// Must be the first import: ES module imports run before this file's body,
+// and config/auth.js connects to MongoDB as soon as it is imported
+import "dotenv/config";
 
 import express from "express";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
-import { connectDB } from "./config/db.js";
+import { toNodeHandler } from "better-auth/node";
+import { auth } from "./config/auth.js";
 import { configureCors, corsOptions } from "./config/cors.js";
 import cors from "cors";
 
-import authRoutes from "./routes/authRoutes.js";
 import whiteboardRoutes from "./routes/whiteboardRoutes.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// Connect to MongoDB Atlas
-connectDB();
 
 // High-security HTTP headers
 app.use(
@@ -40,23 +37,13 @@ app.use((req, res, next) => {
   next();
 });
 
+// Better Auth (OTP sign-in/registration, sessions, sign-out, rate limiting).
+// Must be mounted before express.json() so it can read the raw request body.
+app.all("/api/auth/*", toNodeHandler(auth));
+
 // Body parsers with generous limits for whiteboard canvas payloads
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
-
-// Rate limiting for OTP endpoints to protect against brute force / spam
-const otpLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 15, // max 15 requests per 10 minutes per IP
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    message: "Too many verification requests. Please wait a few minutes before trying again.",
-  },
-});
-
-app.use("/api/auth/send-otp", otpLimiter);
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {
@@ -69,7 +56,6 @@ app.get("/api/health", (req, res) => {
 });
 
 // API Routes
-app.use("/api/auth", authRoutes);
 app.use("/api/whiteboard", whiteboardRoutes);
 
 // 404 Handler

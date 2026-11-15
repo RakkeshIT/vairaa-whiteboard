@@ -1,7 +1,7 @@
 import cors from "cors";
 
-// Parse configured origins from environment
-const getOrigins = () => {
+// Parse configured origins from environment (also used as Better Auth trustedOrigins)
+export const getOrigins = () => {
   const envOrigins = (process.env.CLIENT_URL || "")
     .split(",")
     .map((o) => o.trim())

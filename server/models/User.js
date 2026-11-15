@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 
+// Accounts are created and updated by Better Auth (config/auth.js) in this same "users" collection
 const userSchema = new mongoose.Schema(
   {
     email: {
@@ -22,6 +23,13 @@ const userSchema = new mongoose.Schema(
       trim: true,
       default: "",
       maxlength: [120, "Company name cannot exceed 120 characters"],
+    },
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    image: {
+      type: String,
     },
     lastLoginAt: {
       type: Date,

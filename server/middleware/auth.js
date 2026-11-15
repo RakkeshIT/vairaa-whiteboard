@@ -1,61 +1,33 @@
-import jwt from "jsonwebtoken";
-import { User } from "../models/User.js";
+import { fromNodeHeaders } from "better-auth/node";
+import { auth } from "../config/auth.js";
 
 export const requireAuth = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
+    // Validates the httpOnly session cookie against the sessions collection
+    const session = await auth.api.getSession({
+      headers: fromNodeHeaders(req.headers),
+    });
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    if (!session) {
       return res.status(401).json({
         success: false,
-        message: "Authentication token missing or invalid format. Please log in.",
-      });
-    }
-
-    const token = authHeader.split(" ")[1];
-
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "No token provided.",
-      });
-    }
-
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "vairaa_whiteboard_super_secret_jwt_key_2026_secure"
-    );
-
-    // Verify user still exists in database
-    const user = await User.findById(decoded.userId).select("-__v");
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "User session is no longer valid. User does not exist.",
+        message: "Authentication required. Please sign in.",
       });
     }
 
     req.user = {
-      userId: user._id.toString(),
-      email: user.email,
-      name: user.name,
-      company: user.company,
+      userId: session.user.id,
+      email: session.user.email,
+      name: session.user.name,
+      company: session.user.company,
     };
 
     next();
   } catch (error) {
-    if (error.name === "TokenExpiredError") {
-      return res.status(401).json({
-        success: false,
-        message: "Session expired. Please log in again.",
-        expired: true,
-      });
-    }
-
+    console.error("[Auth Error] Session validation failed:", error.message);
     return res.status(401).json({
       success: false,
       message: "Invalid authentication credentials.",
     });
   }
 };
-

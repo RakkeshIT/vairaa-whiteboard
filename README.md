@@ -13,16 +13,16 @@ whiteboard/
 │   │   ├── components/   # Toolbar, TopMenu, AuthModal, BottomBar, PropsPanel
 │   │   ├── lib/          # API Client, Canvas Render, Storage, Cursors
 │   │   └── App.jsx       # Main Whiteboard Canvas & Cloud Sync state
-│   ├── .env              # VITE_API_URL=http://localhost:5000/api
+│   ├── .env              # VITE_API_URL=/api (proxied to the backend)
 │   └── package.json
 │
 ├── server/               # Express Backend API
-│   ├── config/           # MongoDB Atlas & High-Security Global CORS
-│   ├── models/           # User, Otp, Whiteboard Mongoose Models
-│   ├── middleware/       # JWT Auth Protection
-│   ├── routes/           # Auth (/api/auth) & Whiteboard (/api/whiteboard)
-│   ├── utils/            # OTP Mailer with Dev Fallback
-│   ├── .env              # MongoDB Atlas URI, JWT Secret, Client Origins
+│   ├── config/           # MongoDB Atlas, CORS, Better Auth (email OTP)
+│   ├── models/           # User, Whiteboard Mongoose Models
+│   ├── middleware/       # Session Auth Protection (Better Auth)
+│   ├── routes/           # Whiteboard (/api/whiteboard); auth served by Better Auth at /api/auth
+│   ├── utils/            # OTP Mailer (Gmail or SMTP)
+│   ├── .env              # MongoDB URI, Better Auth secret/URL, email, client origins
 │   └── server.js         # Express Server Entry Point
 │
 └── package.json
@@ -39,12 +39,8 @@ npm install
 npm run dev
 ```
 The server will start at: `http://localhost:5000`
-- MongoDB Atlas will connect automatically to `whiteboard_db`.
-- When an OTP is requested, it will be logged directly to the server terminal:
-  ```
-  🔑 [OTP GENERATED] Email: you@domain.com | CODE: [ 123456 ]
-  ```
-  (And sent via SMTP if SMTP credentials are added to `server/.env`).
+- Copy `server/.env.example` to `server/.env` and fill in `MONGODB_URI`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` and email credentials.
+- Verification codes are only delivered by email; they are never logged.
 
 ### 2. Run the Web Frontend
 In another terminal:
@@ -59,16 +55,13 @@ Open: `http://localhost:5173`
 
 ## Authentication Flow
 
-1. Click **Sign In / Cloud Sync** in the top-left menu.
-2. Enter your email and click **Continue with OTP**.
-3. **If New User (Sign Up)**:
-   - Enter the 6-digit OTP.
-   - Enter your **User Name** and **Company / Organization**.
-   - Account is created in MongoDB Atlas and personal whiteboard is initialized.
-4. **If Existing User (Sign In)**:
-   - Enter the 6-digit OTP.
-   - Verified and automatically signed in with JWT token.
-5. **Per-User Whiteboard Separation**:
-   - Each user's whiteboard elements and canvas states are stored independently in MongoDB under their unique `userId`.
-   - Edits are automatically auto-synced to MongoDB Atlas.
+Passwordless email OTP via [Better Auth](https://better-auth.com) (`emailOTP` plugin). Sessions are httpOnly cookies.
 
+1. Click **Sign In / Cloud Sync** in the top-left menu.
+2. **Create Account**: enter name, optional company and email, then the 6-digit code from your inbox. The account is created only after the code is verified, and a personal whiteboard is initialized.
+3. **Sign In**: enter your email, then the 6-digit code.
+4. Codes expire after 10 minutes, allow 5 attempts, and can be resent after 60 seconds (max 5 codes per email per 15 minutes).
+5. **Sign Out** revokes the session on the server.
+6. **Per-User Whiteboard Separation**: each user's whiteboards are stored under their `userId` and auto-synced.
+
+The Vite dev server proxies `/api` to `http://localhost:5000`; in production `web/vercel.json` rewrites `/api/*` to the backend so the session cookie stays first-party.
