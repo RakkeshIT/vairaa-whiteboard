@@ -19,6 +19,8 @@ import {
   Italic,
   Underline,
   ListOrdered,
+  Lock,
+  PencilLine,
 } from "lucide-react";
 import { useState } from "react";
 import { INK } from "../lib/render";
@@ -194,9 +196,11 @@ export default function PropsPanel({
   onToggleFmt,
   onList,
   onStamp,
+  onEditRich,
+  onLock,
 }) {
   const has = (...t) => t.some((x) => types.includes(x));
-  const strokeable = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "text", "stamp");
+  const strokeable = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "text", "stamp", "math");
   const stampTool = types.length === 1 && types[0] === "stamp" && selCount === 0;
   const quickStamps = selCount === 0 && !editing && has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond");
   const shapes = has("rect", "ellipse", "diamond");
@@ -206,7 +210,7 @@ export default function PropsPanel({
   const opacity = !has("eraser", "laser") || selCount > 0;
 
   return (
-    <div className="panel w-[212px] max-h-[calc(100vh-150px)] overflow-y-auto no-scrollbar p-3 flex flex-col gap-3.5 text-zinc-700 dark:text-zinc-200">
+    <div className="panel w-[212px] ui-panel-max-h overflow-y-auto no-scrollbar p-3 flex flex-col gap-3.5 text-zinc-700 dark:text-zinc-200">
       {stampTool && <StampPicker values={values} onStamp={onStamp} onChange={onChange} />}
       {quickStamps && (
         <Section title="Quick stamps · click, then tap board">
@@ -350,6 +354,64 @@ export default function PropsPanel({
           </Section>
         </>
       )}
+      {onEditRich && (
+        <button
+          onClick={onEditRich}
+          className="h-9 rounded-xl text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center gap-1.5"
+        >
+          <PencilLine size={15} /> {types.includes("code") ? "Edit code" : "Edit equation"}
+        </button>
+      )}
+      {has("code") && (
+        <>
+          <Section title="Code theme">
+            <Seg
+              options={[
+                { v: "dark", label: "Dark" },
+                { v: "light", label: "Light" },
+              ]}
+              value={values.codeTheme}
+              onPick={(v) => onChange({ codeTheme: v })}
+            />
+          </Section>
+          <Section title="Code size">
+            <Seg
+              options={[
+                { v: 14, label: "S" },
+                { v: 20, label: "M" },
+                { v: 28, label: "L" },
+                { v: 40, label: "XL" },
+              ]}
+              value={values.codeFontSize}
+              onPick={(v) => onChange({ codeFontSize: v })}
+            />
+          </Section>
+          <Section title="Line numbers">
+            <Seg
+              options={[
+                { v: true, label: "Show" },
+                { v: false, label: "Hide" },
+              ]}
+              value={values.lineNumbers}
+              onPick={(v) => onChange({ lineNumbers: v })}
+            />
+          </Section>
+        </>
+      )}
+      {has("math") && (
+        <Section title="Equation size">
+          <Seg
+            options={[
+              { v: 28, label: "S" },
+              { v: 40, label: "M" },
+              { v: 64, label: "L" },
+              { v: 96, label: "XL" },
+            ]}
+            value={values.mathSize}
+            onPick={(v) => onChange({ mathSize: v })}
+          />
+        </Section>
+      )}
       {opacity && (
         <Section title={`Opacity · ${Math.round(values.opacity * 100)}%`}>
           <input
@@ -406,6 +468,9 @@ export default function PropsPanel({
           <div className="flex gap-1">
             <button className="icon-btn" title="Duplicate (Ctrl+D)" onClick={onDuplicate}>
               <Copy size={16} />
+            </button>
+            <button className="icon-btn" title="Lock in place (e.g. a slide you draw over)" onClick={onLock}>
+              <Lock size={16} />
             </button>
             <button className="icon-btn !text-red-500" title="Delete (Del)" onClick={onDelete}>
               <Trash2 size={16} />

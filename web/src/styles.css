@@ -35,3 +35,40 @@ canvas {
 .no-scrollbar {
   scrollbar-width: none;
 }
+
+/* ---------- responsive layout ----------
+   Floating UI is positioned from these variables so panels, toasts and the timer always sit
+   between the header and the bottom bars, clear of notches and home indicators. */
+:root {
+  --ui-top: max(0.75rem, env(safe-area-inset-top));
+  --ui-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  --ui-left: max(0.75rem, env(safe-area-inset-left));
+  --ui-right: max(0.75rem, env(safe-area-inset-right));
+  /* phones: header row + full-width toolbar row */
+  --header-h: 6.25rem;
+  /* phones: page tabs stacked above zoom controls */
+  --footer-h: 6rem;
+}
+@media (min-width: 640px) {
+  :root {
+    --header-h: 3rem;
+    --footer-h: 2.75rem;
+  }
+}
+.ui-top {
+  top: var(--ui-top);
+  left: var(--ui-left);
+  right: var(--ui-right);
+}
+.ui-bottom {
+  bottom: var(--ui-bottom);
+  left: var(--ui-left);
+  right: var(--ui-right);
+}
+.ui-below-header {
+  top: calc(var(--ui-top) + var(--header-h) + 0.5rem);
+}
+/* properties panel: below its toggle button, above the bottom bars */
+.ui-panel-max-h {
+  max-height: calc(100dvh - var(--ui-top) - var(--header-h) - var(--ui-bottom) - var(--footer-h) - 4.75rem);
+}

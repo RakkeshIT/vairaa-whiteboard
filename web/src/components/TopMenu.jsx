@@ -13,6 +13,12 @@ import {
   Expand,
   User,
   LogOut,
+  Presentation,
+  LayoutTemplate,
+  FileText,
+  LayoutGrid,
+  Timer,
+  LockOpen,
 } from "lucide-react";
 
 const BGS = [
@@ -71,7 +77,7 @@ export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, clo
       </button>
 
       {open && (
-        <div className="panel absolute left-0 top-13 w-72 p-1.5 flex flex-col gap-0.5 z-50 shadow-2xl">
+        <div className="panel absolute left-0 top-13 w-72 max-w-[calc(100vw-1.5rem)] max-h-[calc(100dvh-var(--ui-top)-4.5rem)] overflow-y-auto overscroll-contain p-1.5 flex flex-col gap-0.5 z-50 shadow-2xl">
           {/* Logo & Workspace Title */}
           <div className="flex items-center gap-2.5 px-3 pt-2 pb-2">
             <img src="/logo.svg" alt="" className="w-8 h-8" />
@@ -140,6 +146,15 @@ export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, clo
           </div>
 
           <div className="h-px bg-zinc-200 dark:bg-zinc-700 mb-1" />
+          <div className="px-3 pt-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Teach</div>
+          <Item icon={Presentation} label="Present" hint="F5" action="present" />
+          <Item icon={FileText} label="Import slides (PDF)…" action="pdf" />
+          <Item icon={LayoutTemplate} label="Teaching templates…" action="templates" />
+          <Item icon={LayoutGrid} label="All pages" hint="G" action="overview" />
+          <Item icon={Timer} label="Class timer" action="timer" />
+          <Item icon={LockOpen} label="Unlock items on this page" action="unlock" />
+
+          <div className="h-px bg-zinc-200 dark:bg-zinc-700 my-1" />
           <Item icon={FolderOpen} label="Import board (.json)…" hint="Ctrl+O" action="open" />
           <Item icon={Save} label="Save board (.json)" hint="Ctrl+S" action="save" />
           <Item icon={ImageDown} label="Export PNG" hint="Ctrl+E" action="png" />

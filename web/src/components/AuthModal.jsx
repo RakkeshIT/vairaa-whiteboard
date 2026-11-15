@@ -180,8 +180,8 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess }) {
   const { errors: otpErrors } = otpForm.formState;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="relative w-full max-w-md bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl p-6 sm:p-8 text-zinc-900 dark:text-zinc-100">
+    <div className="fixed inset-0 z-[100] flex justify-center p-4 overflow-y-auto overscroll-contain bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="relative my-auto w-full max-w-md bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl p-6 sm:p-8 text-zinc-900 dark:text-zinc-100">
         {/* Close Button */}
         <button
           onClick={handleModalClose}

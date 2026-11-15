@@ -1,7 +1,7 @@
 // Element model + geometry helpers (all coordinates are world units).
 //
 // Point elements (pen, hl, line, arrow) store absolute `points: [[x, y, pressure?], ...]`.
-// Box elements (rect, ellipse, diamond, text, sticky, image) store `x, y, w, h`.
+// Box elements (rect, ellipse, diamond, text, sticky, image, code, math) store `x, y, w, h`.
 
 export const uid = () =>
   Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
@@ -11,6 +11,10 @@ export const isPointType = (t) => POINT_TYPES.has(t);
 export const isLinear = (t) => t === "line" || t === "arrow";
 export const isShape = (t) => t === "rect" || t === "ellipse" || t === "diamond";
 export const hasFill = (el) => el.fill && el.fill !== "transparent";
+// Elements sized by their content: resizing scales the font, then the box is re-fitted.
+const SCALES_FONT = new Set(["text", "code", "math"]);
+/** Locked elements (e.g. imported slides) can't be selected, moved or erased. */
+export const isLocked = (el) => !!el.locked;
 
 // Elements are immutable, so bounds can be cached per object (big pen strokes are O(points)).
 const boundsCache = new WeakMap();
@@ -167,7 +171,7 @@ export function scaleElement(el, B, N, axis) {
     x2 = mx(el.x + el.w),
     y2 = my(el.y + el.h);
   const out = { ...el, x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
-  if (el.type === "text") out.fontSize = Math.max(6, el.fontSize * Math.abs(axis === "x" ? sx : sy));
+  if (SCALES_FONT.has(el.type)) out.fontSize = Math.max(6, el.fontSize * Math.abs(axis === "x" ? sx : sy));
   return out;
 }
 

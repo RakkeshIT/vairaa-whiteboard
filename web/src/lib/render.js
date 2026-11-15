@@ -1,5 +1,7 @@
 import { getStroke } from "perfect-freehand";
 import { getBounds, hasFill, unionBounds } from "./elements";
+import { fitCode, drawCode, codeToSVG } from "./code";
+import { fitMath, mathSrc } from "./math";
 
 export const FONTS = {
   hand: '"Caveat", "Segoe Print", cursive',
@@ -54,7 +56,9 @@ export function measureText(el) {
   const w = Math.max(el.fontSize * 0.6, ...lines.map((l) => mctx.measureText(l).width));
   return { w: Math.ceil(w) + 2, h: Math.ceil(lines.length * el.fontSize * LINE_HEIGHT) };
 }
-export const fitText = (el) => (el.type === "text" ? { ...el, ...measureText(el) } : el);
+/** Re-size elements whose box follows their content (text, code, math); others pass through. */
+export const fitText = (el) =>
+  el.type === "text" ? { ...el, ...measureText(el) } : el.type === "code" ? fitCode(el) : el.type === "math" ? fitMath(el) : el;
 
 export function wrapText(ctx, text, maxW) {
   const out = [];
@@ -254,6 +258,15 @@ export function drawElement(ctx, el, { dark = false, noCache = false, hideText =
         ctx.font = `${s * 0.86}px ${EMOJI_FONT}`;
         ctx.fillText(el.value, cx, cy + s * 0.06);
       }
+      break;
+    }
+    case "code":
+      drawCode(ctx, el, getBounds(el), { hideText });
+      break;
+    case "math": {
+      const b = getBounds(el);
+      const img = getImage(mathSrc(el, stroke));
+      if (img.complete && img.naturalWidth) ctx.drawImage(img, b.x, b.y, b.w, b.h);
       break;
     }
     case "image": {
@@ -490,6 +503,12 @@ export function renderToSVG(els, { dark, pad = 32, background = true }) {
           );
         break;
       }
+      case "code":
+        parts.push(codeToSVG(el, bb, esc));
+        break;
+      case "math":
+        parts.push(`<image href="${mathSrc(el, st)}" x="${bb.x}" y="${bb.y}" width="${bb.w}" height="${bb.h}" opacity="${op}" preserveAspectRatio="none"/>`);
+        break;
       case "image":
         parts.push(`<image href="${el.src}" x="${bb.x}" y="${bb.y}" width="${bb.w}" height="${bb.h}" opacity="${op}" preserveAspectRatio="none"/>`);
         break;

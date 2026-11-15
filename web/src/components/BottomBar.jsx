@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Plus, X } from "lucide-react";
+import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Plus, X, LayoutGrid } from "lucide-react";
 
 export function ZoomControls({ zoom, onZoom, onUndo, onRedo, canUndo, canRedo }) {
   return (
@@ -34,10 +34,13 @@ export function ZoomControls({ zoom, onZoom, onUndo, onRedo, canUndo, canRedo })
   );
 }
 
-export function PageTabs({ pages, current, onSelect, onAdd, onRename, onDelete }) {
+export function PageTabs({ pages, current, onSelect, onAdd, onRename, onDelete, onOverview }) {
   const [editing, setEditing] = useState(null);
   return (
-    <div className="panel flex items-center gap-0.5 p-1 max-w-[calc(100vw-32px)] md:max-w-[46vw] overflow-x-auto no-scrollbar">
+    <div className="panel flex items-center gap-0.5 p-1 max-w-full lg:max-w-[46vw] overflow-x-auto no-scrollbar">
+      <button className="icon-btn" title="All pages (G)" onClick={onOverview}>
+        <LayoutGrid size={16} />
+      </button>
       {pages.map((p) => (
         <div
           key={p.id}

@@ -23,6 +23,11 @@ const SHORTCUTS = [
   ["Paste image", "Ctrl V, or drop a file on the board"],
   ["Save / Open / PNG", "Ctrl S  ·  Ctrl O  ·  Ctrl E"],
   ["Fullscreen", "F"],
+  ["Present / end presentation", "F5  ·  Esc"],
+  ["Next / previous page (presenting)", "→ ↓ PageDown  ·  ← ↑ PageUp"],
+  ["All pages", "G"],
+  ["Edit code block / equation", "Double-click it"],
+  ["Import slides", "Menu → Import slides (PDF), or drop a PDF"],
   ["Cycle pointer style", ". (plus · dot · ring · pencil · arrow)"],
 ];
 
@@ -30,7 +35,7 @@ export default function HelpModal({ onClose }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 backdrop-blur-sm p-4" onPointerDown={onClose}>
       <div
-        className="panel !bg-white dark:!bg-zinc-900 w-full max-w-2xl max-h-[85vh] overflow-y-auto p-6 text-zinc-700 dark:text-zinc-200"
+        className="panel !bg-white dark:!bg-zinc-900 w-full max-w-2xl max-h-[85dvh] overflow-y-auto p-6 text-zinc-700 dark:text-zinc-200"
         onPointerDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-label="Keyboard shortcuts"
@@ -44,7 +49,7 @@ export default function HelpModal({ onClose }) {
         <div className="grid sm:grid-cols-2 gap-x-8 gap-y-6">
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mb-2">Tools</h3>
-            {TOOLS.filter((t) => t !== "|").map((t) => (
+            {TOOLS.filter((t) => t !== "|" && t.key).map((t) => (
               <div key={t.id} className="flex items-center gap-2 py-1 text-sm">
                 <t.icon size={15} className="opacity-70" />
                 <span className="flex-1">{t.label}</span>

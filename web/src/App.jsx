@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Palette, HelpCircle, ImageDown, X, User as UserIcon } from "lucide-react";
+import { Palette, HelpCircle, ImageDown, X, User as UserIcon, Presentation } from "lucide-react";
 import Toolbar from "./components/Toolbar";
 import PropsPanel from "./components/PropsPanel";
 import TopMenu from "./components/TopMenu";
 import { ZoomControls, PageTabs } from "./components/BottomBar";
 import HelpModal from "./components/HelpModal";
 import AuthModal from "./components/AuthModal";
+import RichEditDialog from "./components/RichEditDialog";
+import TemplatePicker from "./components/TemplatePicker";
+import PageOverview from "./components/PageOverview";
+import ClassTimer from "./components/ClassTimer";
+import PresenterBar from "./components/PresenterBar";
+import { pdfToSlides, pdfErrorMessage, MAX_PDF_PAGES } from "./lib/pdf";
 import { authClient, whiteboardApi } from "./lib/api";
 import * as G from "./lib/elements";
 import {
@@ -44,6 +50,11 @@ const DEFAULT_STYLE = {
   stampKind: "emoji",
   stamp: "😀",
   stampSize: 56,
+  codeTheme: "dark",
+  codeFontSize: 20,
+  codeLanguage: "javascript",
+  lineNumbers: true,
+  mathSize: 40,
 };
 const TEXT_TYPES = ["text", "sticky"];
 const FMT_KEYS = ["bold", "italic", "underline"];
@@ -76,7 +87,14 @@ const KEYMAP = {
   n: "sticky",
   s: "stamp",
   i: "image",
+  b: "code",
+  q: "math",
 };
+const RICH_TYPES = ["code", "math"];
+// Slide images are imported 1280 world units wide (roughly one screen at 100% zoom)
+const SLIDE_WIDTH = 1280;
+const PRESENT_NEXT = ["ArrowRight", "ArrowDown", "PageDown"];
+const PRESENT_PREV = ["ArrowLeft", "ArrowUp", "PageUp"];
 const SNAP = 12;
 const LASER_MS = 900;
 const CLIP_PREFIX = "pro-whiteboard/elements:";
@@ -89,6 +107,7 @@ export default function App() {
   const taRef = useRef(null);
   const fileImg = useRef(null);
   const fileDoc = useRef(null);
+  const filePdf = useRef(null);
 
   const [doc, setDoc] = useState(() => Store.loadDoc() || Store.newDoc());
   const [tool, setToolState] = useState("pen");
@@ -100,6 +119,14 @@ export default function App() {
   const [help, setHelp] = useState(false);
   const [panelOpen, setPanelOpen] = useState(() => window.innerWidth >= 768);
   const [, setHistTick] = useState(0);
+
+  // Teaching: presentation mode, spotlight, timer, page overview, templates, code/math editor
+  const [presenting, setPresenting] = useState(false);
+  const [spotlight, setSpotlight] = useState(false);
+  const [timerOpen, setTimerOpen] = useState(false);
+  const [overview, setOverview] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [richEdit, setRichEdit] = useState(null); // { kind, id? , at?, initial }
 
   // Per-user authentication & cloud whiteboard sync states
   // Session lives in an httpOnly cookie; useSession restores it on refresh and reacts to sign-in/out
@@ -114,7 +141,7 @@ export default function App() {
 
   // Latest state for event handlers (pointer/keyboard handlers run outside React's render cycle).
   const R = useRef(null);
-  R.current = { doc, page, elements, tool, style, selected, editing };
+  R.current = { doc, page, elements, tool, style, selected, editing, presenting, spotlight };
 
   const camRef = useRef(cam);
   const I = useRef({ mode: "idle" }); // current interaction
@@ -138,6 +165,8 @@ export default function App() {
   const remoteDoc = useRef(null); // doc that came from storage — don't echo it back
   const pendingSave = useRef(null);
   const stampReturn = useRef(null); // tool to go back to after a quick stamp from the pen
+  const spotPos = useRef(null); // last pointer position in screen coords (spotlight)
+  const presentFullscreen = useRef(false); // presentation mode entered fullscreen itself
 
   // ---------------------------------------------------------------- helpers
   const showToast = (msg) => {
@@ -184,7 +213,7 @@ export default function App() {
       tol = 6 / camRef.current.z;
     for (let i = r.elements.length - 1; i >= 0; i--) {
       const el = r.elements[i];
-      if (types && !types.includes(el.type)) continue;
+      if (G.isLocked(el) || (types && !types.includes(el.type))) continue;
       if (G.hitTest(el, wx, wy, tol)) return el;
     }
     return null;
@@ -201,7 +230,9 @@ export default function App() {
     const W = window.innerWidth,
       Hh = window.innerHeight;
     if (!b) return setCam({ x: 0, y: 0, z: 1 });
-    const z = clampZ(Math.min((W - 160) / Math.max(b.w, 1), (Hh - 200) / Math.max(b.h, 1), 2));
+    const mx = Math.min(160, W * 0.08),
+      my = Math.min(200, Hh * 0.2);
+    const z = clampZ(Math.min((W - mx) / Math.max(b.w, 1), (Hh - my) / Math.max(b.h, 1), 2));
     setCam({ z, x: W / 2 - (b.x + b.w / 2) * z, y: Hh / 2 - (b.y + b.h / 2) * z });
   };
   const zoomCmd = (kind) => {
@@ -217,6 +248,7 @@ export default function App() {
   // ---------------------------------------------------------------- tools
   const setTool = (t) => {
     if (t === "image") return fileImg.current?.click();
+    if (t === "template") return setTemplatesOpen(true);
     stampReturn.current = null;
     finishEdit();
     setToolState(t);
@@ -264,6 +296,7 @@ export default function App() {
       bold: st.bold,
       italic: st.italic,
       underline: st.underline,
+      ...(R.current.presenting && { annot: true }),
     });
     const before = R.current.elements;
     setLive([...before, el]);
@@ -283,7 +316,8 @@ export default function App() {
     for (let s = 0; s <= steps; s++) {
       const px = x0 + ((x1 - x0) * s) / steps,
         py = y0 + ((y1 - y0) * s) / steps;
-      for (const el of R.current.elements) if (!set.has(el.id) && G.hitTest(el, px, py, rad)) set.add(el.id);
+      for (const el of R.current.elements)
+        if (!set.has(el.id) && !G.isLocked(el) && G.hitTest(el, px, py, rad)) set.add(el.id);
     }
   };
   const beginPinch = () => {
@@ -328,7 +362,7 @@ export default function App() {
               before: r.elements,
               B: G.unionBounds(selEls),
               ids: new Set(r.selected),
-              keep: selEls.some((el) => el.type === "text" || el.type === "image" || el.type === "stamp"),
+              keep: selEls.some((el) => ["text", "image", "stamp", "code", "math"].includes(el.type)),
             };
       return;
     }
@@ -405,6 +439,8 @@ export default function App() {
       strokeWidth: st.strokeWidth,
       strokeStyle: st.strokeStyle,
       opacity: st.opacity,
+      // Ink added while presenting can be wiped in one go without touching the lesson content
+      ...(r.presenting && { annot: true }),
     };
     const sx = snapV(wx),
       sy = snapV(wy);
@@ -498,6 +534,14 @@ export default function App() {
         I.current = { mode: "erase", last: [wx, wy] };
         eraseAlong(wx, wy, wx, wy);
         break;
+      case "code":
+      case "math":
+        setRichEdit({
+          kind: r.tool,
+          at: [wx, wy],
+          initial: r.tool === "code" ? { language: st.codeLanguage, theme: st.codeTheme, lineNumbers: st.lineNumbers } : {},
+        });
+        break;
       case "laser":
         laserStroke.current++;
         laser.current.push({ x: wx, y: wy, t: performance.now(), s: laserStroke.current });
@@ -545,10 +589,11 @@ export default function App() {
     const m = I.current;
     const [wx, wy] = toWorld(e.clientX, e.clientY);
     hover.current = [wx, wy];
+    spotPos.current = [e.clientX, e.clientY];
     if (m.mode === "pinch") return updatePinch();
     if (m.mode === "idle") {
       if (e.pointerType !== "touch") updateCursor(e, wx, wy);
-      if (R.current.tool === "eraser") dirty.current = true;
+      if (R.current.tool === "eraser" || R.current.spotlight) dirty.current = true;
       return;
     }
     const r = R.current,
@@ -618,7 +663,7 @@ export default function App() {
           h: Math.abs(wy - m.sy),
         };
         marquee.current = box;
-        const ids = r.elements.filter((el) => G.intersects(G.getBounds(el), box)).map((el) => el.id);
+        const ids = r.elements.filter((el) => !G.isLocked(el) && G.intersects(G.getBounds(el), box)).map((el) => el.id);
         const next = [...new Set([...m.base, ...ids])];
         if (next.length !== r.selected.length || next.some((id, i) => id !== r.selected[i])) setSel(next);
         break;
@@ -688,8 +733,8 @@ export default function App() {
   const onDoubleClick = (e) => {
     if (R.current.tool !== "select") return;
     const [wx, wy] = toWorld(e.clientX, e.clientY);
-    const hit = topHit(wx, wy, ["text", "sticky"]);
-    if (hit) return startEdit(hit.id);
+    const hit = topHit(wx, wy, ["text", "sticky", ...RICH_TYPES]);
+    if (hit) return RICH_TYPES.includes(hit.type) ? openRichEdit(hit) : startEdit(hit.id);
     if (!topHit(wx, wy)) {
       const { el, before } = createText(wx, wy);
       startEdit(el.id, before);
@@ -784,6 +829,10 @@ export default function App() {
       if ("opacity" in patch) u.opacity = patch.opacity;
       if ("font" in patch && (t === "text" || t === "sticky")) u.font = patch.font;
       if ("fontSize" in patch && (t === "text" || t === "sticky")) u.fontSize = patch.fontSize;
+      if ("codeFontSize" in patch && t === "code") u.fontSize = patch.codeFontSize;
+      if ("codeTheme" in patch && t === "code") u.theme = patch.codeTheme;
+      if ("lineNumbers" in patch && t === "code") u.lineNumbers = patch.lineNumbers;
+      if ("mathSize" in patch && t === "math") u.fontSize = patch.mathSize;
       for (const k of FMT_KEYS) if (k in patch && TEXT_TYPES.includes(t)) u[k] = patch[k];
       return fitText(u);
     });
@@ -877,6 +926,170 @@ export default function App() {
     setDoc((d) => ({ ...d, pages: rest, current: d.current === id ? rest[Math.max(0, idx - 1)].id : d.current }));
   };
   const renamePage = (id, name) => setDoc((d) => ({ ...d, pages: d.pages.map((p) => (p.id === id ? { ...p, name } : p)) }));
+  const uniquePageName = (name) => {
+    const names = new Set(R.current.doc.pages.map((p) => p.name));
+    let n = name;
+    for (let i = 2; names.has(n); i++) n = `${name} ${i}`;
+    return n;
+  };
+  /** Insert pages after the current one and show the first (a lone empty page is replaced). */
+  const insertPages = (pages) => {
+    finishEdit();
+    setSel([]);
+    pageCams.current[R.current.page.id] = camRef.current;
+    setDoc((d) => {
+      const keep = d.pages.length === 1 && !d.pages[0].elements.length ? [] : d.pages;
+      const at = keep.findIndex((p) => p.id === d.current) + 1;
+      return { ...d, pages: [...keep.slice(0, at), ...pages, ...keep.slice(at)], current: pages[0].id };
+    });
+    fitTo(pages[0].elements);
+  };
+  /** Go to a page; while presenting, each page is fitted to the screen like a slide. */
+  const showPage = (id) => {
+    switchPage(id);
+    const p = R.current.doc.pages.find((x) => x.id === id);
+    if (R.current.presenting && p?.elements.length) fitTo(p.elements);
+  };
+  const gotoPage = (delta) => {
+    const pages = R.current.doc.pages;
+    const next = pages[pages.findIndex((p) => p.id === R.current.page.id) + delta];
+    if (next) showPage(next.id);
+  };
+
+  // ---------------------------------------------------------------- teaching
+  const openRichEdit = (el) => {
+    finishEdit();
+    setRichEdit({ kind: el.type, id: el.id, initial: el });
+  };
+  const saveRichEdit = (values) => {
+    const re = richEdit;
+    setRichEdit(null);
+    if (!re) return;
+    const r = R.current;
+    if (re.id) {
+      commit(r.elements.map((el) => (el.id === re.id ? fitText({ ...el, ...values }) : el)));
+      return setSel([re.id]);
+    }
+    const st = r.style;
+    const isCode = re.kind === "code";
+    if (isCode)
+      setStyle((s) => ({ ...s, codeLanguage: values.language, codeTheme: values.theme, lineNumbers: values.lineNumbers }));
+    const el = fitText({
+      id: G.uid(),
+      type: re.kind,
+      x: 0,
+      y: 0,
+      w: 0,
+      h: 0,
+      stroke: isCode ? INK : st.stroke,
+      strokeWidth: 1,
+      opacity: 1,
+      fontSize: isCode ? st.codeFontSize : st.mathSize,
+      ...values,
+      ...(r.presenting && { annot: true }),
+    });
+    const placed = { ...el, x: snapV(re.at[0] - el.w / 2), y: snapV(re.at[1] - el.h / 2) };
+    commit([...r.elements, placed]);
+    setToolState("select");
+    R.current.tool = "select";
+    setSel([placed.id]);
+  };
+  const insertTemplate = (t) => {
+    setTemplatesOpen(false);
+    finishEdit();
+    const els = t.build();
+    if (R.current.elements.length) {
+      insertPages([{ ...Store.newPage(), name: uniquePageName(t.name), elements: els }]);
+    } else {
+      const b = G.unionBounds(els);
+      const [cx, cy] = toWorld(window.innerWidth / 2, window.innerHeight / 2);
+      const moved = els.map((el) => G.translate(el, cx - b.x - b.w / 2, cy - b.y - b.h / 2));
+      commit(moved);
+      fitTo(moved);
+    }
+    setToolState("select");
+    R.current.tool = "select";
+    showToast(`Added the "${t.name}" template`);
+  };
+  const importPdf = async (file) => {
+    if (!file) return;
+    showToast(`Opening ${file.name}…`);
+    try {
+      const { slides, total } = await pdfToSlides(file, {
+        onProgress: (i, n) => showToast(`Importing slide ${i} of ${n}…`),
+      });
+      if (!slides.length) return showToast("That PDF has no pages");
+      const title = file.name.replace(/\.pdf$/i, "").slice(0, 28) || "Slides";
+      const pages = slides.map((sl, i) => {
+        const h = (SLIDE_WIDTH * sl.h) / sl.w;
+        return {
+          ...Store.newPage(),
+          name: `${title} · ${i + 1}`,
+          // Locked so drawing over a slide can never move or erase it
+          elements: [
+            { id: G.uid(), type: "image", src: sl.src, x: -SLIDE_WIDTH / 2, y: -h / 2, w: SLIDE_WIDTH, h, opacity: 1, stroke: INK, strokeWidth: 1, locked: true },
+          ],
+        };
+      });
+      insertPages(pages);
+      const mb = (JSON.stringify(R.current.doc).length + slides.reduce((n, sl) => n + sl.src.length, 0)) / 1e6;
+      const parts = [`Imported ${slides.length} slide${slides.length > 1 ? "s" : ""}`];
+      if (total > slides.length) parts.push(`(first ${MAX_PDF_PAGES} of ${total})`);
+      if (user && mb > 12) parts.push(`· board is ~${Math.round(mb)} MB; cloud sync holds about 15 MB`);
+      showToast(parts.join(" "));
+    } catch (err) {
+      console.error("PDF import failed:", err);
+      showToast(pdfErrorMessage(err));
+    }
+  };
+  const lockSelection = () => {
+    const s = new Set(R.current.selected);
+    if (!s.size) return;
+    commit(R.current.elements.map((el) => (s.has(el.id) ? { ...el, locked: true } : el)));
+    setSel([]);
+    showToast("Locked. Menu → Unlock items on this page to edit them again");
+  };
+  const unlockPage = () => {
+    const n = R.current.elements.filter(G.isLocked).length;
+    if (!n) return showToast("Nothing is locked on this page");
+    commit(R.current.elements.map((el) => (G.isLocked(el) ? { ...el, locked: false } : el)));
+    showToast(`Unlocked ${n} item${n > 1 ? "s" : ""}`);
+  };
+  const clearAnnotations = () => {
+    const n = R.current.elements.filter((el) => el.annot).length;
+    if (!n) return;
+    commit(R.current.elements.filter((el) => !el.annot));
+    setSel([]);
+    showToast(`Cleared ${n} annotation${n > 1 ? "s" : ""} (Ctrl+Z to undo)`);
+  };
+  const toggleSpotlight = () => {
+    R.current.spotlight = !R.current.spotlight;
+    setSpotlight(R.current.spotlight);
+    dirty.current = true;
+  };
+  const startPresenting = () => {
+    finishEdit();
+    setSel([]);
+    setOverview(false);
+    setTemplatesOpen(false);
+    R.current.presenting = true;
+    setPresenting(true);
+    if (!document.fullscreenElement)
+      document.documentElement
+        .requestFullscreen?.()
+        .then(() => (presentFullscreen.current = true))
+        .catch(() => {});
+    if (R.current.elements.length) fitTo(R.current.elements);
+  };
+  const stopPresenting = () => {
+    R.current.presenting = false;
+    R.current.spotlight = false;
+    setPresenting(false);
+    setSpotlight(false);
+    if (presentFullscreen.current && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    presentFullscreen.current = false;
+    dirty.current = true;
+  };
 
   // files
   const exportTargets = () => (R.current.selected.length ? selEls : R.current.elements);
@@ -931,6 +1144,12 @@ export default function App() {
     else if (a === "theme") setDoc((d) => ({ ...d, dark: !d.dark }));
     else if (a === "snap") setDoc((d) => ({ ...d, snap: !d.snap }));
     else if (a === "fullscreen") toggleFullscreen();
+    else if (a === "present") startPresenting();
+    else if (a === "templates") setTemplatesOpen(true);
+    else if (a === "pdf") filePdf.current?.click();
+    else if (a === "overview") setOverview(true);
+    else if (a === "timer") setTimerOpen((t) => !t);
+    else if (a === "unlock") unlockPage();
     else if (a === "clear") {
       if (R.current.elements.length && window.confirm("Clear everything on this page? You can undo this.")) {
         commit([]);
@@ -950,6 +1169,11 @@ export default function App() {
       const r = R.current;
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
+      if (e.key === "F5" && !mod && !e.shiftKey) {
+        e.preventDefault();
+        if (!r.presenting) startPresenting();
+        return;
+      }
       if (e.key === " ") {
         e.preventDefault();
         if (!spaceDown.current) {
@@ -973,7 +1197,7 @@ export default function App() {
         else if (k === "a") {
           e.preventDefault();
           setTool("select");
-          setSel(r.elements.map((el) => el.id));
+          setSel(r.elements.filter((el) => !G.isLocked(el)).map((el) => el.id));
         } else if (k === "d") (e.preventDefault(), duplicate());
         else if (k === "c") copy();
         else if (k === "x") copy() && deleteSel();
@@ -993,7 +1217,12 @@ export default function App() {
       if (e.key === "Delete" || e.key === "Backspace") return deleteSel();
       if (e.key === "Escape") {
         setHelp(false);
+        if (r.presenting && !r.selected.length) stopPresenting();
         return setSel([]);
+      }
+      if (r.presenting && (e.key.startsWith("Page") || !r.selected.length)) {
+        if (PRESENT_NEXT.includes(e.key)) return (e.preventDefault(), gotoPage(1));
+        if (PRESENT_PREV.includes(e.key)) return (e.preventDefault(), gotoPage(-1));
       }
       if (e.key.startsWith("Arrow") && r.selected.length) {
         e.preventDefault();
@@ -1012,7 +1241,14 @@ export default function App() {
         return showToast(`Pointer: ${next}`);
       }
       if (k === "f") return toggleFullscreen();
+      if (k === "g") return setOverview((o) => !o);
       if (KEYMAP[k] && !e.shiftKey) setTool(KEYMAP[k]);
+    },
+    onFullscreenChange() {
+      if (!document.fullscreenElement && presentFullscreen.current) {
+        presentFullscreen.current = false;
+        stopPresenting();
+      }
     },
     onKeyUp(e) {
       if (e.key === " ") {
@@ -1065,18 +1301,21 @@ export default function App() {
       ku = (e) => api.current.onKeyUp(e),
       ps = (e) => api.current.onPaste(e),
       wh = (e) => api.current.onWheel(e),
-      blur = () => (spaceDown.current = false);
+      blur = () => (spaceDown.current = false),
+      fs = () => api.current.onFullscreenChange();
     const cv = canvasRef.current;
     window.addEventListener("keydown", kd);
     window.addEventListener("keyup", ku);
     window.addEventListener("paste", ps);
     window.addEventListener("blur", blur);
+    document.addEventListener("fullscreenchange", fs);
     cv.addEventListener("wheel", wh, { passive: false });
     return () => {
       window.removeEventListener("keydown", kd);
       window.removeEventListener("keyup", ku);
       window.removeEventListener("paste", ps);
       window.removeEventListener("blur", blur);
+      document.removeEventListener("fullscreenchange", fs);
       cv.removeEventListener("wheel", wh);
     };
   }, []);
@@ -1151,6 +1390,17 @@ export default function App() {
       ctx.strokeStyle = dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.5)";
       ctx.lineWidth = 1;
       ctx.stroke();
+    }
+
+    // spotlight: dim everything except a soft circle around the pointer
+    if (r.spotlight && spotPos.current) {
+      const [sx, sy] = spotPos.current;
+      const rad = Math.max(90, Math.min(W, Hh) * 0.17);
+      const g = ctx.createRadialGradient(sx, sy, rad * 0.82, sx, sy, rad * 1.08);
+      g.addColorStop(0, "rgba(0,0,0,0)");
+      g.addColorStop(1, "rgba(0,0,0,0.72)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, Hh);
     }
   };
 
@@ -1389,6 +1639,10 @@ export default function App() {
         ...(TEXT_TYPES.includes(first.type)
           ? { bold: !!first.bold, italic: !!first.italic, underline: !!first.underline }
           : {}),
+        ...(first.type === "code"
+          ? { codeTheme: first.theme, codeFontSize: first.fontSize, lineNumbers: first.lineNumbers !== false }
+          : {}),
+        ...(first.type === "math" ? { mathSize: first.fontSize } : {}),
       }
     : style;
 
@@ -1424,8 +1678,9 @@ export default function App() {
         const f = e.dataTransfer.files?.[0];
         if (!f) return;
         if (f.type.startsWith("image/")) insertImage(f, toWorld(e.clientX, e.clientY));
+        else if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) importPdf(f);
         else if (f.name.endsWith(".json")) openFile(f);
-        else showToast("Drop an image or a board .json file");
+        else showToast("Drop an image, a PDF or a board .json file");
       }}
     >
       <canvas
@@ -1489,8 +1744,9 @@ export default function App() {
       )}
 
       {/* top row */}
-      <div className="fixed top-3 left-3 right-3 z-30 flex items-start justify-between gap-2 pointer-events-none">
-        <div className="pointer-events-auto flex items-center gap-2">
+      {!presenting && (
+      <div className="ui-top fixed z-30 flex flex-wrap items-start gap-2 pointer-events-none">
+        <div className="pointer-events-auto shrink-0 flex items-center gap-2">
           <TopMenu
             doc={doc}
             onAction={menuAction}
@@ -1507,7 +1763,7 @@ export default function App() {
               <div className="w-6 h-6 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-[10px] shrink-0">
                 {user.name.slice(0, 2).toUpperCase()}
               </div>
-              <div className="hidden sm:block leading-tight text-left">
+              <div className="hidden xl:block leading-tight text-left">
                 <div className="font-semibold text-zinc-800 dark:text-zinc-100 truncate max-w-[120px]">
                   {user.name}
                 </div>
@@ -1531,14 +1787,22 @@ export default function App() {
               title="Sign In with OTP to save your whiteboard per user"
             >
               <UserIcon size={15} />
-              <span className="hidden sm:inline">Sign In / Cloud Sync</span>
+              <span className="hidden xl:inline whitespace-nowrap">Sign In / Cloud Sync</span>
             </button>
           )}
         </div>
-        <div className="pointer-events-auto lg:absolute lg:left-1/2 lg:-translate-x-1/2">
+        {/* Phones: own full-width row. Wider: fills the space between the side groups. */}
+        <div className="order-last basis-full min-w-0 sm:order-none sm:basis-0 sm:flex-1">
           <Toolbar tool={tool} onTool={setTool} />
         </div>
-        <div className="pointer-events-auto flex gap-2">
+        <div className="pointer-events-auto shrink-0 ml-auto flex gap-2">
+          <button
+            className="panel inline-flex items-center gap-2 h-11 px-3 xl:px-4 rounded-2xl text-sm font-semibold text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
+            onClick={startPresenting}
+            title="Present (F5): fullscreen, page-by-page, with spotlight and timer"
+          >
+            <Presentation size={17} /> <span className="hidden lg:inline">Present</span>
+          </button>
           <button
             className="panel hidden xl:inline-flex items-center gap-2 h-11 px-4 rounded-2xl text-sm font-semibold text-white !bg-indigo-500 hover:!bg-indigo-600 transition"
             onClick={exportPNG}
@@ -1546,16 +1810,17 @@ export default function App() {
           >
             <ImageDown size={17} /> Export
           </button>
-          <button className="panel icon-btn !w-11 !h-11" title="Shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
+          <button className="panel icon-btn !w-11 !h-11 !hidden md:!inline-flex" title="Shortcuts (?)" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}>
             <HelpCircle size={19} />
           </button>
         </div>
       </div>
+      )}
 
       {/* properties */}
-      {showPanel && (
+      {showPanel && !presenting && (
         <div
-          className="fixed left-3 top-[68px] z-20 flex flex-col items-start gap-2"
+          className="ui-below-header fixed left-[var(--ui-left)] z-20 flex flex-col items-start gap-2"
           // Keep the text cursor in the note/text while clicking panel buttons (B / I / U, points…).
           onMouseDown={(e) => editing && e.target.tagName !== "INPUT" && e.preventDefault()}
         >
@@ -1582,17 +1847,20 @@ export default function App() {
               onToggleFmt={toggleFmt}
               onList={applyList}
               onStamp={pickStamp}
+              onEditRich={selEls.length === 1 && RICH_TYPES.includes(selEls[0].type) ? () => openRichEdit(selEls[0]) : null}
+              onLock={lockSelection}
             />
           )}
         </div>
       )}
 
       {/* bottom */}
-      <div className="fixed bottom-3 left-3 right-3 z-20 flex flex-col-reverse items-start lg:flex-row lg:items-end gap-2 pointer-events-none">
-        <div className="pointer-events-auto">
+      {!presenting && (
+      <div className="ui-bottom fixed z-20 flex flex-col-reverse items-start sm:flex-row sm:items-end gap-2 pointer-events-none">
+        <div className="pointer-events-auto shrink-0">
           <ZoomControls zoom={cam.z} onZoom={zoomCmd} onUndo={undo} onRedo={redo} canUndo={canUndo} canRedo={canRedo} />
         </div>
-        <div className="pointer-events-auto lg:absolute lg:left-1/2 lg:-translate-x-1/2 lg:bottom-0">
+        <div className="pointer-events-auto min-w-0 max-w-full lg:absolute lg:left-1/2 lg:-translate-x-1/2 lg:bottom-0">
           <PageTabs
             pages={doc.pages}
             current={page.id}
@@ -1600,22 +1868,81 @@ export default function App() {
             onAdd={addPage}
             onRename={renamePage}
             onDelete={deletePage}
+            onOverview={() => setOverview(true)}
           />
         </div>
         <div className="hidden xl:block ml-auto self-end text-xs text-zinc-400 bg-white/70 dark:bg-zinc-900/70 backdrop-blur px-3 py-1.5 rounded-full">
           {elements.length} item{elements.length === 1 ? "" : "s"} · Space-drag to pan · Ctrl+scroll to zoom · ? shortcuts
         </div>
       </div>
+      )}
+
+      {presenting && (
+        <div className="fixed bottom-[var(--ui-bottom)] left-1/2 -translate-x-1/2 z-30 w-max max-w-[calc(100vw-1.5rem)]">
+          <PresenterBar
+            pageIndex={doc.pages.findIndex((p) => p.id === page.id)}
+            pageCount={doc.pages.length}
+            onPrev={() => gotoPage(-1)}
+            onNext={() => gotoPage(1)}
+            onOverview={() => setOverview(true)}
+            tool={tool}
+            onTool={setTool}
+            color={style.stroke}
+            onColor={(c) => applyStyle({ stroke: c })}
+            dark={doc.dark}
+            spotlight={spotlight}
+            onSpotlight={toggleSpotlight}
+            timerOpen={timerOpen}
+            onTimer={() => setTimerOpen((t) => !t)}
+            annotationCount={elements.filter((el) => el.annot).length}
+            onClearAnnotations={clearAnnotations}
+            onExit={stopPresenting}
+          />
+        </div>
+      )}
+      {timerOpen && (
+        <div className={`fixed right-[var(--ui-right)] z-30 ${presenting ? "top-[var(--ui-top)]" : "ui-below-header"}`}>
+          <ClassTimer onClose={() => setTimerOpen(false)} />
+        </div>
+      )}
 
       {toast && (
         <div
           role="status"
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-xl bg-zinc-900 text-white text-sm shadow-lg dark:bg-white dark:text-zinc-900"
+          className={`fixed left-1/2 -translate-x-1/2 z-40 w-max max-w-[calc(100vw-2rem)] text-center px-4 py-2 rounded-xl bg-zinc-900 text-white text-sm shadow-lg dark:bg-white dark:text-zinc-900 ${
+            presenting ? "bottom-[calc(var(--ui-bottom)+6.5rem)]" : "ui-below-header"
+          }`}
         >
           {toast}
         </div>
       )}
       {help && <HelpModal onClose={() => setHelp(false)} />}
+      {richEdit && (
+        <RichEditDialog
+          kind={richEdit.kind}
+          initial={richEdit.initial}
+          dark={doc.dark}
+          onSave={saveRichEdit}
+          onCancel={() => setRichEdit(null)}
+        />
+      )}
+      {templatesOpen && <TemplatePicker dark={doc.dark} onPick={insertTemplate} onClose={() => setTemplatesOpen(false)} />}
+      {overview && (
+        <PageOverview
+          pages={doc.pages}
+          current={page.id}
+          dark={doc.dark}
+          onSelect={(id) => {
+            setOverview(false);
+            showPage(id);
+          }}
+          onAdd={() => {
+            setOverview(false);
+            addPage();
+          }}
+          onClose={() => setOverview(false)}
+        />
+      )}
       <AuthModal
         isOpen={authOpen}
         onClose={() => setAuthOpen(false)}
@@ -1630,6 +1957,16 @@ export default function App() {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (f) insertImage(f);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={filePdf}
+        type="file"
+        accept="application/pdf,.pdf"
+        hidden
+        onChange={(e) => {
+          importPdf(e.target.files?.[0]);
           e.target.value = "";
         }}
       />
