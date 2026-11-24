@@ -29,6 +29,14 @@ const SHORTCUTS = [
   ["Edit code block / equation", "Double-click it"],
   ["Import slides", "Menu → Import slides (PDF), or drop a PDF"],
   ["Cycle pointer style", ". (plus · dot · ring · pencil · arrow)"],
+  ["Quick shape", "Draw a line / box / circle, then hold the pen still"],
+  ["Straight line with the ruler", "Toolbar → Ruler, draw along its edge"],
+  ["Rotate ruler / protractor", "Drag the round knob (snaps to 15°)"],
+  ["Compass", "J · drag from the centre for the radius, then drag around"],
+  ["Reveal a hidden answer", "Tap it while presenting · double-click otherwise"],
+  ["Rub out part of a stroke", "Eraser → Partial"],
+  ["Share live with students", "Menu → Share live view"],
+  ["Record the lesson / PDF handout", "Menu → Record lesson · Export lesson as PDF"],
 ];
 
 export default function HelpModal({ onClose }) {

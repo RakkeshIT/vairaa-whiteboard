@@ -19,12 +19,19 @@ import {
   Sigma,
   LayoutTemplate,
   MoreHorizontal,
+  Lasso,
+  Ruler,
+  Gauge,
+  DraftingCompass,
+  ChartSpline,
+  EyeOff,
 } from "lucide-react";
 
 // `rank`: lower stays on the bar longer when space is short; the rest move into "More".
 export const TOOLS = [
   { id: "select", icon: MousePointer2, label: "Select", key: "V", rank: 0 },
   { id: "hand", icon: Hand, label: "Hand / pan", key: "H", rank: 3 },
+  { id: "lasso", icon: Lasso, label: "Lasso select", key: "W", rank: 18 },
   "|",
   { id: "pen", icon: Pencil, label: "Pen", key: "P", rank: 1 },
   { id: "hl", icon: Highlighter, label: "Highlighter", key: "M", rank: 4 },
@@ -44,7 +51,13 @@ export const TOOLS = [
   "|",
   { id: "code", icon: Code2, label: "Code block", key: "B", rank: 10 },
   { id: "math", icon: Sigma, label: "Math equation", key: "Q", rank: 11 },
+  { id: "graph", icon: ChartSpline, label: "Graph y = f(x)", key: "Y", rank: 19 },
+  { id: "cover", icon: EyeOff, label: "Hidden answer (tap to reveal)", key: "U", rank: 20 },
   { id: "template", icon: LayoutTemplate, label: "Teaching templates", rank: 12 },
+  "|",
+  { id: "ruler", icon: Ruler, label: "Ruler (on / off)", rank: 21 },
+  { id: "protractor", icon: Gauge, label: "Protractor (on / off)", rank: 22 },
+  { id: "compass", icon: DraftingCompass, label: "Compass", key: "J", rank: 23 },
 ];
 
 const ITEMS = TOOLS.filter((t) => t !== "|");
@@ -70,21 +83,23 @@ function widthFor(n) {
   return { w, shown };
 }
 
-const Btn = ({ t, tool, onTool }) => (
+const Btn = ({ t, on, onTool }) => (
   <button
     data-tool={t.id}
     title={t.key ? `${t.label} (${t.key})` : t.label}
     aria-label={t.label}
-    aria-pressed={tool === t.id}
+    aria-pressed={on}
     onClick={() => onTool(t.id)}
-    className={`icon-btn relative ${tool === t.id ? "on" : ""}`}
+    className={`icon-btn relative ${on ? "on" : ""}`}
   >
-    <t.icon size={18} strokeWidth={tool === t.id ? 2.4 : 2} />
+    <t.icon size={18} strokeWidth={on ? 2.4 : 2} />
     {t.key && <span className="hidden lg:block absolute bottom-0.5 right-1 text-[8px] leading-none opacity-40">{t.key}</span>}
   </button>
 );
 
-export default function Toolbar({ tool, onTool }) {
+/** `toggles`: on/off overlays (ruler, protractor) shown as active while visible. */
+export default function Toolbar({ tool, onTool, toggles = {} }) {
+  const isOn = (id) => tool === id || !!toggles[id];
   const wrapRef = useRef(null);
   const moreRef = useRef(null);
   const [shown, setShown] = useState(() => new Set(ITEMS.map((t) => t.id)));
@@ -114,6 +129,7 @@ export default function Toolbar({ tool, onTool }) {
 
   const hidden = ITEMS.filter((t) => !shown.has(t.id));
   const activeHidden = hidden.find((t) => t.id === tool);
+  const hiddenToggleOn = hidden.some((t) => toggles[t.id]);
 
   // Visible tools in display order, with separators only between non-empty groups
   const row = [];
@@ -134,14 +150,14 @@ export default function Toolbar({ tool, onTool }) {
           t === "|" ? (
             <div key={`sep${i}`} className="w-px h-6 bg-zinc-200 dark:bg-zinc-700 mx-1 shrink-0" />
           ) : (
-            <Btn key={t.id} t={t} tool={tool} onTool={onTool} />
+            <Btn key={t.id} t={t} on={isOn(t.id)} onTool={onTool} />
           ),
         )}
         {hidden.length > 0 && (
           <div ref={moreRef} className="relative flex items-center">
             <div className="w-px h-6 bg-zinc-200 dark:bg-zinc-700 mx-1 shrink-0" />
             <button
-              className={`icon-btn ${activeHidden || moreOpen ? "on" : ""}`}
+              className={`icon-btn ${activeHidden || hiddenToggleOn || moreOpen ? "on" : ""}`}
               title={activeHidden ? `${activeHidden.label} · more tools` : "More tools"}
               aria-label="More tools"
               aria-expanded={moreOpen}
@@ -160,7 +176,7 @@ export default function Toolbar({ tool, onTool }) {
                       setMoreOpen(false);
                     }}
                     className={`flex items-center gap-2.5 h-10 px-2.5 rounded-xl text-sm text-left transition ${
-                      tool === t.id
+                      isOn(t.id)
                         ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/25 dark:text-indigo-200"
                         : "text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800"
                     }`}

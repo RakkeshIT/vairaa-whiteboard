@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Palette, HelpCircle, ImageDown, X, User as UserIcon, Presentation } from "lucide-react";
+import { Palette, HelpCircle, ImageDown, X, User as UserIcon, Presentation, Radio } from "lucide-react";
 import Toolbar from "./components/Toolbar";
 import PropsPanel from "./components/PropsPanel";
 import TopMenu from "./components/TopMenu";
@@ -11,7 +11,14 @@ import TemplatePicker from "./components/TemplatePicker";
 import PageOverview from "./components/PageOverview";
 import ClassTimer from "./components/ClassTimer";
 import PresenterBar from "./components/PresenterBar";
+import GraphDialog from "./components/GraphDialog";
+import ShareDialog from "./components/ShareDialog";
+import RecordingPill from "./components/RecordingPill";
 import { pdfToSlides, pdfErrorMessage, MAX_PDF_PAGES } from "./lib/pdf";
+import { recognize } from "./lib/shapes";
+import * as Guides from "./lib/guides";
+import { startRecording, canRecord } from "./lib/recorder";
+import { GRAPH_DEFAULTS } from "./lib/graph";
 import { authClient, whiteboardApi } from "./lib/api";
 import * as G from "./lib/elements";
 import {
@@ -24,6 +31,8 @@ import {
   colorFor,
   renderToCanvas,
   renderToSVG,
+  preloadAssets,
+  COVER_FILL,
   FONTS,
   LINE_HEIGHT,
   STICKY_PAD,
@@ -33,7 +42,12 @@ import * as Store from "./lib/storage";
 import { pointerCSS, stampCursor, POINTER_TOOLS, POINTERS } from "./lib/cursors";
 import * as Text from "./lib/text";
 
-const DRAW_TOOLS = ["pen", "hl", "eraser", "line", "arrow", "rect", "ellipse", "diamond", "text", "sticky", "stamp"];
+const DRAW_TOOLS = ["pen", "hl", "eraser", "line", "arrow", "rect", "ellipse", "diamond", "text", "sticky", "stamp", "compass", "cover"];
+// Tools that are on/off overlays rather than modes
+const GUIDE_TOOLS = ["ruler", "protractor"];
+// Pen pressure response: exponent applied to the stylus pressure (lower = ink comes easier)
+const PRESSURE_GAMMA = { soft: 0.6, normal: 1, firm: 1.6 };
+const HOLD_MS = 550; // hold still this long at the end of a stroke to snap it to a shape
 const DEFAULT_STYLE = {
   stroke: INK,
   fill: "transparent",
@@ -55,6 +69,11 @@ const DEFAULT_STYLE = {
   codeLanguage: "javascript",
   lineNumbers: true,
   mathSize: 40,
+  shapeSnap: true,
+  pressureCurve: "normal",
+  palmReject: true,
+  eraserMode: "stroke",
+  coverFill: COVER_FILL,
 };
 const TEXT_TYPES = ["text", "sticky"];
 const FMT_KEYS = ["bold", "italic", "underline"];
@@ -89,8 +108,12 @@ const KEYMAP = {
   i: "image",
   b: "code",
   q: "math",
+  w: "lasso",
+  y: "graph",
+  u: "cover",
+  j: "compass",
 };
-const RICH_TYPES = ["code", "math"];
+const RICH_TYPES = ["code", "math", "graph"];
 // Slide images are imported 1280 world units wide (roughly one screen at 100% zoom)
 const SLIDE_WIDTH = 1280;
 const PRESENT_NEXT = ["ArrowRight", "ArrowDown", "PageDown"];
@@ -127,6 +150,10 @@ export default function App() {
   const [overview, setOverview] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
   const [richEdit, setRichEdit] = useState(null); // { kind, id? , at?, initial }
+  const [guideOn, setGuideOn] = useState({ ruler: false, protractor: false });
+  const [recording, setRecording] = useState(null); // { startedAt, mic } while recording
+  const [shareOpen, setShareOpen] = useState(false);
+  const [liveCode, setLiveCode] = useState(null); // share code while students can watch live
 
   // Per-user authentication & cloud whiteboard sync states
   // Session lives in an httpOnly cookie; useSession restores it on refresh and reacts to sign-in/out
@@ -146,6 +173,7 @@ export default function App() {
   const camRef = useRef(cam);
   const I = useRef({ mode: "idle" }); // current interaction
   const draft = useRef(null); // element being drawn
+  const sceneCache = useRef({ canvas: document.createElement("canvas"), els: null }); // board snapshot while inking
   const marquee = useRef(null);
   const erased = useRef(new Set());
   const laser = useRef([]);
@@ -167,6 +195,13 @@ export default function App() {
   const stampReturn = useRef(null); // tool to go back to after a quick stamp from the pen
   const spotPos = useRef(null); // last pointer position in screen coords (spotlight)
   const presentFullscreen = useRef(false); // presentation mode entered fullscreen itself
+  const guides = useRef({ ruler: null, protractor: null }); // geometry guides on the board (session only)
+  const compass = useRef(null); // { cx, cy, r, ha } once the compass radius is set
+  const lasso = useRef(null); // lasso path in world coords while selecting
+  const holdTimer = useRef(null); // quick-shape timer while the pen rests at the end of a stroke
+  const penSeen = useRef(false); // a stylus has been used: fingers pan instead of draw
+  const ignoredPointers = useRef(new Set()); // palm contacts rejected while the stylus is down
+  const recorder = useRef(null);
 
   // ---------------------------------------------------------------- helpers
   const showToast = (msg) => {
@@ -246,9 +281,27 @@ export default function App() {
   };
 
   // ---------------------------------------------------------------- tools
+  const toggleGuide = (kind) => {
+    const on = !guides.current[kind];
+    if (on) {
+      const [cx, cy] = toWorld(window.innerWidth / 2, window.innerHeight / 2);
+      guides.current[kind] = kind === "ruler" ? Guides.newRuler(cx, cy) : Guides.newProtractor(cx, cy);
+      showToast(
+        kind === "ruler"
+          ? "Ruler: drag to move, turn with the round knob, draw along an edge for a straight line"
+          : "Protractor: drag to move, turn with the knob, draw along the arc or base to follow it",
+      );
+    } else guides.current[kind] = null;
+    setGuideOn((g) => ({ ...g, [kind]: on }));
+    dirty.current = true;
+  };
   const setTool = (t) => {
     if (t === "image") return fileImg.current?.click();
     if (t === "template") return setTemplatesOpen(true);
+    if (GUIDE_TOOLS.includes(t)) return toggleGuide(t);
+    if (t === "compass" && R.current.tool !== "compass")
+      showToast("Compass: drag from the centre to set the radius, then drag around to draw");
+    if (t !== "compass") compass.current = null;
     stampReturn.current = null;
     finishEdit();
     setToolState(t);
@@ -313,18 +366,39 @@ export default function App() {
     const rad = (6 + R.current.style.strokeWidth * 1.5) / z;
     const steps = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (rad * 0.5)) + 1;
     const set = erased.current;
+    // Partial mode cuts through pen / highlighter ink; everything else is still erased whole
+    const partial = R.current.style.eraserMode === "partial";
+    let els = R.current.elements,
+      cut = false;
     for (let s = 0; s <= steps; s++) {
       const px = x0 + ((x1 - x0) * s) / steps,
         py = y0 + ((y1 - y0) * s) / steps;
-      for (const el of R.current.elements)
+      let changed = false;
+      const next = [];
+      for (const el of els) {
+        if (partial && (el.type === "pen" || el.type === "hl") && !G.isLocked(el) && G.hitTest(el, px, py, rad)) {
+          const pieces = G.splitStroke(el, px, py, rad);
+          if (pieces.length !== 1 || pieces[0] !== el) changed = true;
+          next.push(...pieces);
+          continue;
+        }
         if (!set.has(el.id) && !G.isLocked(el) && G.hitTest(el, px, py, rad)) set.add(el.id);
+        next.push(el);
+      }
+      if (changed) {
+        els = next;
+        cut = true;
+      }
     }
+    if (cut) setLive(els);
   };
   const beginPinch = () => {
     const m = I.current;
-    if (m.before && m.moved) setLive(m.before);
+    if (m.before && (m.moved || m.mode === "erase")) setLive(m.before);
+    clearTimeout(holdTimer.current);
     draft.current = null;
     marquee.current = null;
+    lasso.current = null;
     erased.current = new Set();
     const [a, b] = [...pointers.current.values()];
     I.current = {
@@ -409,29 +483,101 @@ export default function App() {
     };
   };
 
+  /** Pressure for a pointer sample, shaped by the pen's pressure setting. */
+  const pressureOf = (v) => {
+    const curve = R.current.style.pressureCurve;
+    if (v.pointerType !== "pen" || curve === "off" || !v.pressure) return 0.5;
+    return Math.pow(v.pressure, PRESSURE_GAMMA[curve] || 1);
+  };
+  /** Pen points for a pointer event, following a ruler / protractor edge when the stroke started on one. */
+  const penPoint = (v, snap) => {
+    const [x, y] = toWorld(v.clientX, v.clientY);
+    const [px, py] = snap ? Guides.applySnap(snap, x, y, draft.current?.strokeWidth || 4) : [x, y];
+    return [px, py, pressureOf(v)];
+  };
+  const activeGuides = () => Object.values(guides.current).filter(Boolean);
+  /** Hold still at the end of a pen stroke → replace it with the recognised clean shape. */
+  const trySnapShape = () => {
+    const m = I.current,
+      d = draft.current;
+    if (m.mode !== "draw" || m.snapped || m.snap || !d || d.type !== "pen") return;
+    const s = recognize(d.points);
+    if (!s) return;
+    const { points: _p, pressure: _pr, ...rest } = d;
+    draft.current =
+      s.type === "line"
+        ? { ...rest, type: "line", strokeStyle: "solid", points: s.points }
+        : { ...rest, type: s.type, strokeStyle: "solid", fill: "transparent", x: s.x, y: s.y, w: s.w, h: s.h };
+    m.snapped = true;
+    dirty.current = true;
+  };
+
   const onPointerDown = (e) => {
     const cv = canvasRef.current;
     e.preventDefault(); // keeps focus where it is (text editor) and blocks mouse-compat events
+    const r = R.current;
+    // Palm rejection: once a stylus is in use, touches never draw. Touches while the stylus
+    // is down are ignored entirely (a resting palm); otherwise one finger pans, two pinch.
+    const palmMode = r.style.palmReject && penSeen.current;
+    if (e.pointerType === "pen") {
+      penSeen.current = true;
+      if (r.style.palmReject) {
+        let dropped = false;
+        for (const [id, p] of pointers.current)
+          if (p.type === "touch") {
+            ignoredPointers.current.add(id);
+            pointers.current.delete(id);
+            dropped = true;
+          }
+        if (dropped && (I.current.mode === "pan" || I.current.mode === "pinch")) I.current = { mode: "idle" };
+      }
+    }
+    if (palmMode && e.pointerType === "touch" && [...pointers.current.values()].some((p) => p.type === "pen")) {
+      ignoredPointers.current.add(e.pointerId);
+      return;
+    }
     try {
       cv.setPointerCapture(e.pointerId);
     } catch {
       /* pointer already gone */
     }
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     if (pointers.current.size === 2) return beginPinch();
     if (pointers.current.size > 2) return;
     if (R.current.editing) {
       finishEdit();
       return;
     }
-    const r = R.current;
     const [wx, wy] = toWorld(e.clientX, e.clientY);
-    if (e.button === 1 || spaceDown.current || r.tool === "hand") {
-      I.current = { mode: "pan", sx: e.clientX, sy: e.clientY, cam0: camRef.current };
+    const z = camRef.current.z;
+    const fingerPans = palmMode && e.pointerType === "touch";
+    if (e.button === 1 || spaceDown.current || r.tool === "hand" || fingerPans) {
+      I.current = { mode: "pan", sx: e.clientX, sy: e.clientY, cam0: camRef.current, pid: e.pointerId };
       cv.style.cursor = "grabbing";
       return;
     }
     if (e.button !== 0) return;
+
+    // Presenting: tapping a covered answer reveals it, whatever tool is active
+    if (r.presenting) {
+      const cover = topHit(wx, wy, ["cover"]);
+      if (cover && !cover.revealed) {
+        setLive(r.elements.map((el) => (el.id === cover.id ? { ...el, revealed: true } : el)));
+        return;
+      }
+    }
+
+    // Ruler / protractor: grab to move, knob to rotate (pen strokes along an edge snap, below)
+    for (const g of activeGuides()) {
+      const part = Guides.hitGuide(g, wx, wy, z);
+      if (!part) continue;
+      I.current =
+        part === "rotate"
+          ? { mode: "guide-rotate", g: g.kind, a0: g.a, p0: Math.atan2(wy - g.y, wx - g.x), pid: e.pointerId }
+          : { mode: "guide-move", g: g.kind, sx: wx, sy: wy, x0: g.x, y0: g.y, pid: e.pointerId };
+      dirty.current = true;
+      return;
+    }
     const st = r.style;
     const base = {
       id: G.uid(),
@@ -449,15 +595,55 @@ export default function App() {
         selectDown(e, wx, wy);
         break;
       case "pen":
-      case "hl":
+      case "hl": {
+        let snap = null;
+        for (const g of activeGuides()) if ((snap = Guides.snapFor(g, wx, wy, z))) break;
         draft.current = {
           ...base,
           type: r.tool,
           strokeStyle: "solid",
-          pressure: e.pointerType === "pen",
-          points: [[wx, wy, e.pressure || 0.5]],
+          // "off" pressure = uniform width (all samples 0.5) instead of speed-simulated pressure
+          pressure: e.pointerType === "pen" || !!snap || r.style.pressureCurve === "off",
+          points: [],
         };
-        I.current = { mode: "draw" };
+        draft.current.points.push(penPoint(e, snap));
+        sceneCache.current.els = null; // re-snapshot: assets may have loaded since the last stroke
+        I.current = { mode: "draw", snap, anchor: [e.clientX, e.clientY] };
+        clearTimeout(holdTimer.current);
+        break;
+      }
+      case "lasso":
+        lasso.current = [[wx, wy]];
+        I.current = { mode: "lasso" };
+        break;
+      case "compass": {
+        const c = compass.current;
+        const tol = 14 / z;
+        if (c && Math.hypot(wx - c.cx, wy - c.cy) <= tol) {
+          I.current = { mode: "compass-move", sx: wx, sy: wy, c0: c };
+        } else if (!c || Math.hypot(wx - c.cx - c.r * Math.cos(c.ha), wy - c.cy - c.r * Math.sin(c.ha)) <= tol) {
+          // set (or re-set) the radius by dragging out from the centre
+          const cx = c ? c.cx : wx,
+            cy = c ? c.cy : wy;
+          compass.current = { cx, cy, r: c ? c.r : 0, ha: c ? c.ha : 0 };
+          I.current = { mode: "compass-set" };
+        } else {
+          const a = Math.atan2(wy - c.cy, wx - c.cx);
+          draft.current = {
+            ...base,
+            type: "pen",
+            strokeStyle: "solid",
+            pressure: true,
+            points: [[c.cx + c.r * Math.cos(a), c.cy + c.r * Math.sin(a), 0.5]],
+          };
+          sceneCache.current.els = null;
+          I.current = { mode: "draw", arc: { prev: a, sweep: 0 } };
+        }
+        break;
+      }
+      case "cover":
+        draft.current = { ...base, type: "cover", fill: st.coverFill, revealed: false, x: sx, y: sy, w: 0, h: 0 };
+        I.current = { mode: "create", sx, sy };
         break;
       case "line":
       case "arrow":
@@ -531,11 +717,12 @@ export default function App() {
       }
       case "eraser":
         erased.current = new Set();
-        I.current = { mode: "erase", last: [wx, wy] };
+        I.current = { mode: "erase", last: [wx, wy], before: r.elements };
         eraseAlong(wx, wy, wx, wy);
         break;
       case "code":
       case "math":
+      case "graph":
         setRichEdit({
           kind: r.tool,
           at: [wx, wy],
@@ -548,6 +735,8 @@ export default function App() {
         I.current = { mode: "laser" };
         break;
     }
+    // Only the pointer that started an interaction drives it (a second contact can't scribble into it)
+    if (I.current.mode !== "idle" && I.current.mode !== "pinch") I.current.pid = e.pointerId;
     dirty.current = true;
   };
 
@@ -585,8 +774,11 @@ export default function App() {
   };
 
   const onPointerMove = (e) => {
-    if (pointers.current.has(e.pointerId)) pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (ignoredPointers.current.has(e.pointerId)) return;
+    if (pointers.current.has(e.pointerId))
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     const m = I.current;
+    if (m.pid !== undefined && m.pid !== e.pointerId) return;
     const [wx, wy] = toWorld(e.clientX, e.clientY);
     hover.current = [wx, wy];
     spotPos.current = [e.clientX, e.clientY];
@@ -603,11 +795,67 @@ export default function App() {
         setCam({ ...m.cam0, x: m.cam0.x + e.clientX - m.sx, y: m.cam0.y + e.clientY - m.sy });
         break;
       case "draw": {
+        if (m.snapped || !draft.current) return; // already turned into a clean shape
         const evs = e.getCoalescedEvents?.() || [];
-        for (const v of evs.length ? evs : [e]) {
-          const [x, y] = toWorld(v.clientX, v.clientY);
-          draft.current.points.push([x, y, v.pressure || 0.5]);
+        const pts = draft.current.points;
+        if (m.arc) {
+          // compass: follow the pointer's angle around the centre, at the fixed radius
+          const c = compass.current;
+          const a = Math.atan2(wy - c.cy, wx - c.cx);
+          let d = a - m.arc.prev;
+          if (d > Math.PI) d -= 2 * Math.PI;
+          if (d < -Math.PI) d += 2 * Math.PI;
+          const total = Math.max(-2 * Math.PI, Math.min(2 * Math.PI, m.arc.sweep + d));
+          const start = m.arc.sweep;
+          const n = Math.max(1, Math.ceil((Math.abs(total - start) * c.r * z) / 3));
+          const a0 = Math.atan2(pts[0][1] - c.cy, pts[0][0] - c.cx);
+          for (let i = 1; i <= n; i++) {
+            const t = a0 + start + ((total - start) * i) / n;
+            pts.push([c.cx + c.r * Math.cos(t), c.cy + c.r * Math.sin(t), 0.5]);
+          }
+          m.arc.prev = a;
+          m.arc.sweep = total;
+          break;
         }
+        const minD = 0.5 / z; // drop sub-pixel jitter: keeps getStroke cheap on long strokes
+        for (const v of evs.length ? evs : [e]) {
+          const p = penPoint(v, m.snap);
+          const last = pts[pts.length - 1];
+          if (Math.abs(p[0] - last[0]) < minD && Math.abs(p[1] - last[1]) < minD) continue;
+          pts.push(p);
+        }
+        // Quick shapes: restart the hold timer whenever the pen really moves (not hand tremor)
+        if (r.style.shapeSnap && draft.current.type === "pen" && !m.snap) {
+          if (Math.hypot(e.clientX - m.anchor[0], e.clientY - m.anchor[1]) > 4) {
+            m.anchor = [e.clientX, e.clientY];
+            clearTimeout(holdTimer.current);
+            holdTimer.current = setTimeout(trySnapShape, HOLD_MS);
+          }
+        }
+        break;
+      }
+      case "lasso": {
+        const L = lasso.current,
+          last = L[L.length - 1];
+        if (Math.hypot(wx - last[0], wy - last[1]) * z > 2) L.push([wx, wy]);
+        break;
+      }
+      case "compass-set": {
+        const c = compass.current;
+        compass.current = { ...c, r: Math.hypot(wx - c.cx, wy - c.cy), ha: Math.atan2(wy - c.cy, wx - c.cx) };
+        break;
+      }
+      case "compass-move":
+        compass.current = { ...m.c0, cx: m.c0.cx + wx - m.sx, cy: m.c0.cy + wy - m.sy };
+        break;
+      case "guide-move": {
+        const g = guides.current[m.g];
+        if (g) guides.current[m.g] = { ...g, x: m.x0 + wx - m.sx, y: m.y0 + wy - m.sy };
+        break;
+      }
+      case "guide-rotate": {
+        const g = guides.current[m.g];
+        if (g) guides.current[m.g] = { ...g, a: Guides.snapAngle(m.a0 + Math.atan2(wy - g.y, wx - g.x) - m.p0) };
         break;
       }
       case "create": {
@@ -680,12 +928,15 @@ export default function App() {
   };
 
   const onPointerUp = (e) => {
+    if (ignoredPointers.current.delete(e.pointerId)) return;
     pointers.current.delete(e.pointerId);
     const m = I.current;
     if (m.mode === "pinch") {
       if (pointers.current.size === 0) I.current = { mode: "idle" };
       return;
     }
+    if (m.pid !== undefined && m.pid !== e.pointerId) return;
+    clearTimeout(holdTimer.current);
     I.current = { mode: "idle" };
     const r = R.current,
       z = camRef.current.z;
@@ -696,7 +947,26 @@ export default function App() {
       case "draw": {
         const d = draft.current;
         draft.current = null;
+        if (m.arc && Math.abs(m.arc.sweep) * compass.current.r * z < 4) break; // compass tap, no arc
         if (d) commit([...r.elements, d]);
+        break;
+      }
+      case "lasso": {
+        const poly = lasso.current;
+        lasso.current = null;
+        if (!poly || poly.length < 3) break;
+        const ids = r.elements.filter((el) => !G.isLocked(el) && G.inLasso(el, poly)).map((el) => el.id);
+        if (!ids.length) break;
+        setTool("select");
+        setSel(ids);
+        break;
+      }
+      case "compass-set": {
+        const c = compass.current;
+        if (c.r * z < 8) {
+          compass.current = null;
+          showToast("Drag out from the centre to set the compass radius");
+        }
         break;
       }
       case "create": {
@@ -723,7 +993,8 @@ export default function App() {
       case "erase": {
         const ids = erased.current;
         erased.current = new Set();
-        if (ids.size) commit(r.elements.filter((el) => !ids.has(el.id)));
+        // partial erasing already changed the live elements; record it all as one undo step
+        if (ids.size || r.elements !== m.before) commit(r.elements.filter((el) => !ids.has(el.id)), m.before);
         break;
       }
     }
@@ -733,6 +1004,11 @@ export default function App() {
   const onDoubleClick = (e) => {
     if (R.current.tool !== "select") return;
     const [wx, wy] = toWorld(e.clientX, e.clientY);
+    const cover = topHit(wx, wy, ["cover"]);
+    if (cover) {
+      commit(R.current.elements.map((el) => (el.id === cover.id ? { ...el, revealed: !el.revealed } : el)));
+      return showToast(cover.revealed ? "Answer hidden" : "Answer revealed (double-click to hide again)");
+    }
     const hit = topHit(wx, wy, ["text", "sticky", ...RICH_TYPES]);
     if (hit) return RICH_TYPES.includes(hit.type) ? openRichEdit(hit) : startEdit(hit.id);
     if (!topHit(wx, wy)) {
@@ -824,6 +1100,7 @@ export default function App() {
       if ("stroke" in patch && t !== "sticky" && t !== "image") u.stroke = patch.stroke;
       if ("fill" in patch && G.isShape(t)) u.fill = patch.fill;
       if ("stickyFill" in patch && t === "sticky") u.fill = patch.stickyFill;
+      if ("coverFill" in patch && t === "cover") u.fill = patch.coverFill;
       if ("strokeWidth" in patch && !["text", "sticky", "image"].includes(t)) u.strokeWidth = patch.strokeWidth;
       if ("strokeStyle" in patch && (G.isLinear(t) || G.isShape(t))) u.strokeStyle = patch.strokeStyle;
       if ("opacity" in patch) u.opacity = patch.opacity;
@@ -981,8 +1258,9 @@ export default function App() {
       y: 0,
       w: 0,
       h: 0,
+      ...(re.kind === "graph" && { w: GRAPH_DEFAULTS.w, h: GRAPH_DEFAULTS.h }),
       stroke: isCode ? INK : st.stroke,
-      strokeWidth: 1,
+      strokeWidth: re.kind === "graph" ? 3 : 1,
       opacity: 1,
       fontSize: isCode ? st.codeFontSize : st.mathSize,
       ...values,
@@ -1074,6 +1352,16 @@ export default function App() {
     setTemplatesOpen(false);
     R.current.presenting = true;
     setPresenting(true);
+    // Every hidden answer starts covered again for the new run-through
+    if (R.current.doc.pages.some((p) => p.elements.some((el) => el.type === "cover" && el.revealed)))
+      setDoc((d) => ({
+        ...d,
+        pages: d.pages.map((p) =>
+          p.elements.some((el) => el.type === "cover" && el.revealed)
+            ? { ...p, elements: p.elements.map((el) => (el.type === "cover" ? { ...el, revealed: false } : el)) }
+            : p,
+        ),
+      }));
     if (!document.fullscreenElement)
       document.documentElement
         .requestFullscreen?.()
@@ -1104,6 +1392,68 @@ export default function App() {
     const svg = renderToSVG(exportTargets(), { dark: R.current.doc.dark });
     if (!svg) return showToast("Nothing to export yet");
     Store.downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `board-${stamp()}.svg`);
+  };
+  /** Lesson handout: every non-empty page as one PDF page. */
+  const exportPDF = async () => {
+    const { pages, dark } = R.current.doc;
+    const filled = pages.filter((p) => p.elements.length);
+    if (!filled.length) return showToast("Nothing to export yet");
+    showToast("Building PDF…");
+    try {
+      const { jsPDF } = await import("jspdf");
+      let pdf = null;
+      for (let i = 0; i < filled.length; i++) {
+        showToast(`Building PDF · page ${i + 1} of ${filled.length}…`);
+        await preloadAssets(filled[i].elements, dark);
+        const cv = renderToCanvas(filled[i].elements, { dark, scale: 1.5 });
+        if (!cv) continue;
+        const w = cv.width,
+          h = cv.height,
+          orientation = w >= h ? "landscape" : "portrait";
+        if (!pdf) pdf = new jsPDF({ orientation, unit: "px", format: [w, h], hotfixes: ["px_scaling"], compress: true });
+        else pdf.addPage([w, h], orientation);
+        pdf.addImage(cv.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, w, h);
+      }
+      pdf.save(`lesson-${stamp()}.pdf`);
+      showToast(`Exported ${filled.length} page${filled.length > 1 ? "s" : ""} as PDF`);
+    } catch (err) {
+      console.error("PDF export failed:", err);
+      showToast("Could not build the PDF");
+    }
+  };
+  const toggleRecording = async () => {
+    if (recorder.current === "starting") return; // waiting on the microphone prompt
+    if (recorder.current) {
+      const rec = recorder.current;
+      recorder.current = null;
+      setRecording(null);
+      const { blob, ext } = await rec.stop();
+      Store.downloadBlob(blob, `lesson-${stamp()}.${ext}`);
+      return showToast("Recording saved");
+    }
+    if (!canRecord()) return showToast("Recording isn't supported in this browser");
+    try {
+      recorder.current = "starting";
+      showToast("Starting recording… allow the microphone to record your voice");
+      const rec = await startRecording(canvasRef.current, { mic: true });
+      recorder.current = rec;
+      setRecording({ startedAt: Date.now(), mic: rec.mic });
+      dirty.current = true; // make sure the first frame is captured
+      showToast(rec.mic ? "Recording board + microphone" : "Recording board (no microphone access)");
+    } catch (err) {
+      recorder.current = null;
+      console.error("Recording failed:", err);
+      showToast("Could not start recording");
+    }
+  };
+  /** Lock everything on the page so new ink can't move or erase it (a fixed background). */
+  const lockPage = () => {
+    const els = R.current.elements;
+    const n = els.filter((el) => !G.isLocked(el)).length;
+    if (!n) return showToast(els.length ? "Everything here is already locked" : "This page is empty");
+    commit(els.map((el) => (G.isLocked(el) ? el : { ...el, locked: true })));
+    setSel([]);
+    showToast(`Locked ${n} item${n > 1 ? "s" : ""} as background · Menu → Unlock to edit them`);
   };
   const saveJSON = () => {
     const data = JSON.stringify({ type: "pro-whiteboard", version: 2, ...R.current.doc });
@@ -1150,6 +1500,11 @@ export default function App() {
     else if (a === "overview") setOverview(true);
     else if (a === "timer") setTimerOpen((t) => !t);
     else if (a === "unlock") unlockPage();
+    else if (a === "lockall") lockPage();
+    else if (a === "pdfout") exportPDF();
+    else if (a === "record") toggleRecording();
+    else if (a === "share") setShareOpen(true);
+    else if (a === "palm") setStyle((s) => ({ ...s, palmReject: !s.palmReject }));
     else if (a === "clear") {
       if (R.current.elements.length && window.confirm("Clear everything on this page? You can undo this.")) {
         commit([]);
@@ -1217,6 +1572,10 @@ export default function App() {
       if (e.key === "Delete" || e.key === "Backspace") return deleteSel();
       if (e.key === "Escape") {
         setHelp(false);
+        if (compass.current) {
+          compass.current = null;
+          dirty.current = true;
+        }
         if (r.presenting && !r.selected.length) stopPresenting();
         return setSel([]);
       }
@@ -1331,21 +1690,72 @@ export default function App() {
     const r = R.current,
       c = camRef.current,
       dark = r.doc.dark;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawBackground(ctx, W, Hh, c, r.doc.bg, dark);
+    // While inking, the board under the stroke doesn't change: blit a snapshot instead of
+    // redrawing every element each frame, so stroke latency doesn't grow with board size.
+    const inking = I.current.mode === "draw" && draft.current;
+    const sc = sceneCache.current;
+    const fresh =
+      inking &&
+      sc.els === r.elements &&
+      sc.cam === c &&
+      sc.dark === dark &&
+      sc.bg === r.doc.bg &&
+      sc.presenting === r.presenting &&
+      sc.canvas.width === cv.width &&
+      sc.canvas.height === cv.height;
+    if (fresh) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(sc.canvas, 0, 0);
+    } else {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawBackground(ctx, W, Hh, c, r.doc.bg, dark);
 
-    ctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y);
-    const view = { x: -c.x / c.z, y: -c.y / c.z, w: W / c.z, h: Hh / c.z };
-    const er = erased.current;
-    for (const el of r.elements) {
-      if (!G.intersects(G.getBounds(el), view)) continue;
-      drawElement(ctx, el, { dark, hideText: el.id === r.editing, ghost: er.has(el.id) });
+      ctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y);
+      const view = { x: -c.x / c.z, y: -c.y / c.z, w: W / c.z, h: Hh / c.z };
+      const er = erased.current;
+      for (const el of r.elements) {
+        if (!G.intersects(G.getBounds(el), view)) continue;
+        drawElement(ctx, el, { dark, hideText: el.id === r.editing, ghost: er.has(el.id), presenting: r.presenting });
+      }
+      if (inking) {
+        const off = sc.canvas;
+        if (off.width !== cv.width || off.height !== cv.height) {
+          off.width = cv.width;
+          off.height = cv.height;
+        }
+        const octx = off.getContext("2d");
+        octx.setTransform(1, 0, 0, 1, 0, 0);
+        octx.clearRect(0, 0, off.width, off.height);
+        octx.drawImage(cv, 0, 0);
+        Object.assign(sc, { els: r.elements, cam: c, dark, bg: r.doc.bg, presenting: r.presenting });
+      }
     }
+    ctx.setTransform(dpr * c.z, 0, 0, dpr * c.z, dpr * c.x, dpr * c.y);
     if (draft.current) drawElement(ctx, draft.current, { dark, noCache: true });
+    const mode = I.current.mode;
+    for (const g of Object.values(guides.current))
+      if (g) Guides.drawGuide(ctx, g, c.z, dark, { rotating: mode === "guide-rotate" && I.current.g === g.kind });
+    if (r.tool === "compass") Guides.drawCompass(ctx, compass.current, c.z, dark);
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const s = new Set(r.selected);
     drawSelectionUI(ctx, c, r.elements.filter((el) => s.has(el.id)), marquee.current, dark);
+
+    // lasso path
+    const L0 = lasso.current;
+    if (L0 && L0.length > 1) {
+      ctx.save();
+      ctx.beginPath();
+      L0.forEach(([x, y], i) => (i ? ctx.lineTo(x * c.z + c.x, y * c.z + c.y) : ctx.moveTo(x * c.z + c.x, y * c.z + c.y)));
+      ctx.closePath();
+      ctx.fillStyle = "rgba(105,101,219,0.08)";
+      ctx.fill();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = "#6965db";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // laser trail
     const now = performance.now(),
@@ -1476,6 +1886,7 @@ export default function App() {
           remoteDoc.current = boardRes.whiteboard.doc;
           setDoc(boardRes.whiteboard.doc);
           setCurrentBoardId(boardRes.whiteboard.id);
+          setLiveCode(boardRes.whiteboard.shareCode || null);
         } else {
           // Initial cloud save for this user
           await whiteboardApi.saveBoard(doc, `${user.name}'s Board`);
@@ -1516,6 +1927,7 @@ export default function App() {
       return;
     }
     setCurrentBoardId(null);
+    setLiveCode(null);
     showToast("Signed out. Whiteboard autosaves locally in this browser.");
   };
 
@@ -1631,6 +2043,7 @@ export default function App() {
         stroke: first.stroke ?? style.stroke,
         fill: first.type === "sticky" ? style.fill : (first.fill ?? style.fill),
         stickyFill: first.type === "sticky" ? first.fill : style.stickyFill,
+        coverFill: first.type === "cover" ? first.fill : style.coverFill,
         strokeWidth: first.strokeWidth ?? style.strokeWidth,
         strokeStyle: first.strokeStyle ?? style.strokeStyle,
         opacity: first.opacity ?? 1,
@@ -1754,6 +2167,9 @@ export default function App() {
             onOpenAuth={() => setAuthOpen(true)}
             onLogout={handleLogout}
             cloudStatus={cloudStatus}
+            palmReject={style.palmReject}
+            recording={!!recording}
+            live={!!liveCode}
           />
           {user ? (
             <div
@@ -1793,9 +2209,18 @@ export default function App() {
         </div>
         {/* Phones: own full-width row. Wider: fills the space between the side groups. */}
         <div className="order-last basis-full min-w-0 sm:order-none sm:basis-0 sm:flex-1">
-          <Toolbar tool={tool} onTool={setTool} />
+          <Toolbar tool={tool} onTool={setTool} toggles={guideOn} />
         </div>
         <div className="pointer-events-auto shrink-0 ml-auto flex gap-2">
+          {liveCode && (
+            <button
+              className="panel inline-flex items-center gap-2 h-11 px-3 rounded-2xl text-sm font-semibold text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition"
+              onClick={() => setShareOpen(true)}
+              title="Students are watching live: show the link or stop sharing"
+            >
+              <Radio size={17} /> <span className="hidden lg:inline">Live</span>
+            </button>
+          )}
           <button
             className="panel inline-flex items-center gap-2 h-11 px-3 xl:px-4 rounded-2xl text-sm font-semibold text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition"
             onClick={startPresenting}
@@ -1896,10 +2321,13 @@ export default function App() {
             onTimer={() => setTimerOpen((t) => !t)}
             annotationCount={elements.filter((el) => el.annot).length}
             onClearAnnotations={clearAnnotations}
+            recording={!!recording}
+            onRecord={toggleRecording}
             onExit={stopPresenting}
           />
         </div>
       )}
+      {recording && <RecordingPill startedAt={recording.startedAt} mic={recording.mic} onStop={toggleRecording} />}
       {timerOpen && (
         <div className={`fixed right-[var(--ui-right)] z-30 ${presenting ? "top-[var(--ui-top)]" : "ui-below-header"}`}>
           <ClassTimer onClose={() => setTimerOpen(false)} />
@@ -1917,7 +2345,23 @@ export default function App() {
         </div>
       )}
       {help && <HelpModal onClose={() => setHelp(false)} />}
-      {richEdit && (
+      {richEdit?.kind === "graph" && (
+        <GraphDialog initial={richEdit.initial} dark={doc.dark} onSave={saveRichEdit} onCancel={() => setRichEdit(null)} />
+      )}
+      {shareOpen && (
+        <ShareDialog
+          user={user}
+          boardId={currentBoardId}
+          code={liveCode}
+          onCode={setLiveCode}
+          onSignIn={() => {
+            setShareOpen(false);
+            setAuthOpen(true);
+          }}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+      {richEdit && richEdit.kind !== "graph" && (
         <RichEditDialog
           kind={richEdit.kind}
           initial={richEdit.initial}

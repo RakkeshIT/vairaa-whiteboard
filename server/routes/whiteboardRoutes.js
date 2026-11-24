@@ -1,4 +1,6 @@
 import express from "express";
+import crypto from "crypto";
+import mongoose from "mongoose";
 import { Whiteboard } from "../models/Whiteboard.js";
 import { requireAuth } from "../middleware/auth.js";
 
@@ -46,6 +48,7 @@ router.get("/", async (req, res) => {
         id: board._id,
         title: board.title,
         doc: board.doc,
+        shareCode: board.shareCode || null,
         updatedAt: board.updatedAt,
         createdAt: board.createdAt,
       },
@@ -197,6 +200,56 @@ router.post("/new", async (req, res) => {
       message: "Failed to create new whiteboard.",
       error: error.message,
     });
+  }
+});
+
+/** The caller's board: the given id (must be theirs), else their most recently updated one. */
+const ownBoard = (userId, whiteboardId) => {
+  const query = { userId };
+  if (whiteboardId) {
+    if (!mongoose.isValidObjectId(whiteboardId)) return null;
+    query._id = whiteboardId;
+  }
+  return Whiteboard.findOne(query).sort({ updatedAt: -1 });
+};
+
+/**
+ * @route   POST /api/whiteboard/share
+ * @desc    Start a read-only live view of the user's board; returns the share code
+ */
+router.post("/share", async (req, res) => {
+  try {
+    const board = await ownBoard(req.user.userId, req.body?.whiteboardId);
+    if (!board) {
+      return res.status(404).json({ success: false, message: "Save your board to the cloud first." });
+    }
+    if (!board.shareCode) {
+      // 9 random bytes → 12 URL-safe characters: unguessable, short enough to share
+      board.shareCode = crypto.randomBytes(9).toString("base64url");
+      await board.save();
+    }
+    return res.status(200).json({ success: true, code: board.shareCode });
+  } catch (error) {
+    console.error("[Whiteboard Error] Failed to share board:", error);
+    return res.status(500).json({ success: false, message: "Failed to start the live view." });
+  }
+});
+
+/**
+ * @route   DELETE /api/whiteboard/share
+ * @desc    Stop the live view; the old link stops working
+ */
+router.delete("/share", async (req, res) => {
+  try {
+    const board = await ownBoard(req.user.userId, req.body?.whiteboardId);
+    if (board?.shareCode) {
+      board.shareCode = undefined;
+      await board.save();
+    }
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("[Whiteboard Error] Failed to stop sharing:", error);
+    return res.status(500).json({ success: false, message: "Failed to stop the live view." });
   }
 });
 

@@ -100,6 +100,7 @@ function StampPicker({ values, onStamp, onChange }) {
 
 export const STROKES = [INK, "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5", "#868e96"];
 export const FILLS = ["transparent", "#ffc9c9", "#ffec99", "#b2f2bb", "#a5d8ff", "#eebefa", "#e9ecef"];
+export const COVERS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#334155"];
 export const STICKIES = ["#fef08a", "#fbcfe8", "#bfdbfe", "#bbf7d0", "#fed7aa", "#e9d5ff"];
 const WIDTHS = [
   { v: 2, label: "S" },
@@ -200,11 +201,13 @@ export default function PropsPanel({
   onLock,
 }) {
   const has = (...t) => t.some((x) => types.includes(x));
-  const strokeable = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "text", "stamp", "math");
+  const strokeable = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "text", "stamp", "math", "compass");
   const stampTool = types.length === 1 && types[0] === "stamp" && selCount === 0;
   const quickStamps = selCount === 0 && !editing && has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond");
   const shapes = has("rect", "ellipse", "diamond");
-  const widths = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "eraser");
+  const widths = has("pen", "hl", "line", "arrow", "rect", "ellipse", "diamond", "eraser", "compass");
+  const penTool = selCount === 0 && !editing && types.length === 1 && types[0] === "pen";
+  const eraserTool = selCount === 0 && types.length === 1 && types[0] === "eraser";
   const dashes = has("line", "arrow", "rect", "ellipse", "diamond");
   const fonts = has("text", "sticky");
   const opacity = !has("eraser", "laser") || selCount > 0;
@@ -284,6 +287,49 @@ export default function PropsPanel({
           />
         </Section>
       )}
+      {penTool && (
+        <>
+          <Section title="Quick shapes · draw, then hold">
+            <Seg
+              options={[
+                { v: true, label: "On", title: "Hold the pen still at the end of a stroke to snap it to a line, box, circle or diamond" },
+                { v: false, label: "Off" },
+              ]}
+              value={values.shapeSnap !== false}
+              onPick={(v) => onChange({ shapeSnap: v })}
+            />
+          </Section>
+          <Section title="Stylus pressure">
+            <Seg
+              options={[
+                { v: "off", label: "Off", title: "Even width, whatever the pressure" },
+                { v: "soft", label: "Soft", title: "Thick lines with a light touch" },
+                { v: "normal", label: "Mid", title: "Default response" },
+                { v: "firm", label: "Firm", title: "Press harder for thick lines" },
+              ]}
+              value={values.pressureCurve || "normal"}
+              onPick={(v) => onChange({ pressureCurve: v })}
+            />
+          </Section>
+        </>
+      )}
+      {eraserTool && (
+        <Section title="Eraser">
+          <Seg
+            options={[
+              { v: "stroke", label: "Whole", title: "Erase whole strokes" },
+              { v: "partial", label: "Partial", title: "Rub out only the part of the ink you touch" },
+            ]}
+            value={values.eraserMode || "stroke"}
+            onPick={(v) => onChange({ eraserMode: v })}
+          />
+        </Section>
+      )}
+      {has("cover") && (
+        <Section title="Cover colour">
+          <Swatches colors={COVERS} value={values.coverFill} onPick={(c) => onChange({ coverFill: c })} dark={dark} />
+        </Section>
+      )}
       {strokeable && (
         <Section title="Stroke">
           <Swatches colors={STROKES} value={values.stroke} onPick={(c) => onChange({ stroke: c })} dark={dark} />
@@ -359,7 +405,7 @@ export default function PropsPanel({
           onClick={onEditRich}
           className="h-9 rounded-xl text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center gap-1.5"
         >
-          <PencilLine size={15} /> {types.includes("code") ? "Edit code" : "Edit equation"}
+          <PencilLine size={15} /> {types.includes("code") ? "Edit code" : types.includes("graph") ? "Edit graph" : "Edit equation"}
         </button>
       )}
       {has("code") && (

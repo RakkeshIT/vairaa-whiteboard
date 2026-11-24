@@ -35,6 +35,12 @@ const whiteboardSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Set while the owner shares a read-only live view; anyone with the code can watch
+    shareCode: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
   },
   {
     timestamps: true,

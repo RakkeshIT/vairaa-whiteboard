@@ -211,6 +211,68 @@ export function resizeBounds(B, handle, wx, wy, keepRatio) {
   return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
 }
 
+/**
+ * Partial erase: cut the part of a pen/highlighter stroke that lies within `r` of (cx, cy).
+ * Returns the remaining pieces (0, 1 or more elements); the first keeps the original id.
+ */
+export function splitStroke(el, cx, cy, r) {
+  const reach = r + (el.type === "hl" ? el.strokeWidth * 1.5 + 5 : el.strokeWidth / 2);
+  // Densify long segments so the eraser can't slip between two far-apart points
+  const step = Math.max(0.5, reach / 2);
+  const pts = [];
+  el.points.forEach((p, i) => {
+    if (i) {
+      const q = el.points[i - 1];
+      const n = Math.floor(Math.hypot(p[0] - q[0], p[1] - q[1]) / step);
+      for (let k = 1; k < n; k++) {
+        const t = k / n;
+        const ip = [q[0] + (p[0] - q[0]) * t, q[1] + (p[1] - q[1]) * t];
+        if (p.length > 2) ip.push((q[2] ?? 0.5) + ((p[2] ?? 0.5) - (q[2] ?? 0.5)) * t);
+        pts.push(ip);
+      }
+    }
+    pts.push(p);
+  });
+  const pieces = [];
+  let cur = [];
+  for (const p of pts) {
+    if (Math.hypot(p[0] - cx, p[1] - cy) <= reach) {
+      if (cur.length) pieces.push(cur);
+      cur = [];
+    } else cur.push(p);
+  }
+  if (cur.length) pieces.push(cur);
+  if (pieces.length === 1 && pieces[0].length === pts.length) return [el]; // nothing touched
+  return pieces.filter((p) => p.length > 1).map((points, i) => ({ ...el, id: i ? uid() : el.id, points }));
+}
+
+/** Point-in-polygon (even–odd). poly: [[x, y], ...] */
+export function inPolygon(poly, x, y) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i],
+      [xj, yj] = poly[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Is the element inside a lasso? Strokes: most of their points; boxes: their centre and most corners. */
+export function inLasso(el, poly) {
+  if (isPointType(el.type)) {
+    const p = el.points;
+    const stride = Math.max(1, Math.floor(p.length / 40));
+    let n = 0,
+      hit = 0;
+    for (let i = 0; i < p.length; i += stride, n++) if (inPolygon(poly, p[i][0], p[i][1])) hit++;
+    return hit / n >= 0.8;
+  }
+  const b = getBounds(el);
+  if (!inPolygon(poly, b.x + b.w / 2, b.y + b.h / 2)) return false;
+  const c = [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]];
+  return c.filter(([x, y]) => inPolygon(poly, x, y)).length >= 3;
+}
+
 /** Deep-ish clone with fresh ids, offset by d. */
 export const cloneElements = (els, d = 0) => els.map((el) => translate({ ...el, id: uid() }, d, d));
 

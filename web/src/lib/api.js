@@ -80,5 +80,43 @@ export const whiteboardApi = {
       method: "DELETE",
     });
   },
+
+  // Start a read-only live view for students; returns { code }
+  share: async (whiteboardId) => {
+    return apiRequest("/whiteboard/share", {
+      method: "POST",
+      body: JSON.stringify({ whiteboardId }),
+    });
+  },
+
+  // Stop the live view (the old link stops working)
+  unshare: async (whiteboardId) => {
+    return apiRequest("/whiteboard/share", {
+      method: "DELETE",
+      body: JSON.stringify({ whiteboardId }),
+    });
+  },
+};
+
+/* ====================================================
+   LIVE VIEW (public, read-only; students need no account)
+==================================================== */
+
+export const liveApi = {
+  /** Current page of a shared board, or { unchanged: true } when nothing changed since `since`. */
+  get: async (code, since) => {
+    const q = since ? `?since=${encodeURIComponent(since)}` : "";
+    const res = await fetch(`${API_BASE}/live/${encodeURIComponent(code)}${q}`, { cache: "no-store" });
+    if (res.status === 404) {
+      const err = new Error("This live view has ended");
+      err.status = 404;
+      throw err;
+    }
+    if (!res.ok) throw new Error(`Live view request failed (${res.status})`);
+    return res.json();
+  },
+  /** URL of an image on a shared board (served separately so polls stay small). */
+  assetUrl: (code, pageId, elId) =>
+    `${API_BASE}/live/${encodeURIComponent(code)}/asset/${encodeURIComponent(pageId)}/${encodeURIComponent(elId)}`,
 };
 

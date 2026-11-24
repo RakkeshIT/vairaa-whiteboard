@@ -19,6 +19,11 @@ import {
   LayoutGrid,
   Timer,
   LockOpen,
+  Lock,
+  Radio,
+  Video,
+  FileDown,
+  HandMetal,
 } from "lucide-react";
 
 const BGS = [
@@ -28,7 +33,7 @@ const BGS = [
   { id: "plain", label: "Plain" },
 ];
 
-export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, cloudStatus }) {
+export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, cloudStatus, palmReject, recording, live }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -47,7 +52,7 @@ export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, clo
         } else if (onAction) {
           onAction(action);
         }
-        if (!["snap", "theme"].includes(action)) setOpen(false);
+        if (!["snap", "theme", "palm"].includes(action)) setOpen(false);
       }}
       className={`w-full flex items-center gap-3 px-3 h-9 rounded-lg text-sm text-left transition hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
         danger ? "text-red-500" : "text-zinc-700 dark:text-zinc-200"
@@ -148,10 +153,13 @@ export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, clo
           <div className="h-px bg-zinc-200 dark:bg-zinc-700 mb-1" />
           <div className="px-3 pt-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Teach</div>
           <Item icon={Presentation} label="Present" hint="F5" action="present" />
+          <Item icon={Radio} label={live ? "Live view · students watching" : "Share live view with students…"} action="share" />
+          <Item icon={Video} label={recording ? "Stop recording & save" : "Record lesson (board + mic)"} action="record" danger={recording} />
           <Item icon={FileText} label="Import slides (PDF)…" action="pdf" />
           <Item icon={LayoutTemplate} label="Teaching templates…" action="templates" />
           <Item icon={LayoutGrid} label="All pages" hint="G" action="overview" />
           <Item icon={Timer} label="Class timer" action="timer" />
+          <Item icon={Lock} label="Lock page as background" action="lockall" />
           <Item icon={LockOpen} label="Unlock items on this page" action="unlock" />
 
           <div className="h-px bg-zinc-200 dark:bg-zinc-700 my-1" />
@@ -159,6 +167,7 @@ export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, clo
           <Item icon={Save} label="Save board (.json)" hint="Ctrl+S" action="save" />
           <Item icon={ImageDown} label="Export PNG" hint="Ctrl+E" action="png" />
           <Item icon={FileCode2} label="Export SVG" action="svg" />
+          <Item icon={FileDown} label="Export lesson as PDF handout" action="pdfout" />
 
           <div className="h-px bg-zinc-200 dark:bg-zinc-700 my-1" />
           <div className="px-3 pt-1 pb-1.5">
@@ -184,6 +193,7 @@ export default function TopMenu({ doc, onAction, user, onOpenAuth, onLogout, clo
 
           <Item icon={doc.dark ? Sun : Moon} label="Dark board" action="theme" active={doc.dark} />
           <Item icon={Magnet} label="Snap to grid" action="snap" active={doc.snap} />
+          <Item icon={HandMetal} label="Palm rejection (stylus)" action="palm" active={!!palmReject} />
           <Item icon={Expand} label="Fullscreen" hint="F" action="fullscreen" />
           <div className="h-px bg-zinc-200 dark:bg-zinc-700 my-1" />
           <Item icon={HelpCircle} label="Keyboard shortcuts" hint="?" action="help" />

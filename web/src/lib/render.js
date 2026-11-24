@@ -2,6 +2,7 @@ import { getStroke } from "perfect-freehand";
 import { getBounds, hasFill, unionBounds } from "./elements";
 import { fitCode, drawCode, codeToSVG } from "./code";
 import { fitMath, mathSrc } from "./math";
+import { drawGraph, graphToDataURL } from "./graph";
 
 export const FONTS = {
   hand: '"Caveat", "Segoe Print", cursive',
@@ -47,6 +48,20 @@ export function getImage(src) {
   }
   return img;
 }
+/** Wait until every image / equation these elements need has loaded (exports of unvisited pages). */
+export function preloadAssets(els, dark) {
+  const srcs = [];
+  for (const el of els) {
+    if (el.type === "image") srcs.push(el.src);
+    if (el.type === "math") srcs.push(mathSrc(el, colorFor(el.stroke, dark)));
+  }
+  return Promise.all(
+    srcs.map((s) => {
+      const img = getImage(s);
+      return img.complete && img.naturalWidth ? null : img.decode().catch(() => {});
+    }),
+  );
+}
 
 // ---------- text ----------
 const mctx = document.createElement("canvas").getContext("2d");
@@ -89,7 +104,8 @@ export function wrapText(ctx, text, maxW) {
 
 // ---------- freehand ----------
 const pathCache = new WeakMap();
-export function freehandOutline(el) {
+/** `live` = stroke still being drawn, so the end cap isn't finalized yet. */
+export function freehandOutline(el, live = false) {
   const hl = el.type === "hl";
   return getStroke(el.points, {
     size: hl ? el.strokeWidth * 3 + 10 : el.strokeWidth * 1.5 + 1.5,
@@ -97,7 +113,7 @@ export function freehandOutline(el) {
     smoothing: 0.6,
     streamline: hl ? 0.6 : 0.45,
     simulatePressure: !el.pressure,
-    last: true,
+    last: !live,
   });
 }
 export function svgPathFromStroke(pts) {
@@ -111,11 +127,24 @@ export function svgPathFromStroke(pts) {
   d.push("Z");
   return d.join(" ");
 }
+/** Same curve as svgPathFromStroke, built directly — skips the string build + parse on every live frame. */
+function path2DFromStroke(pts) {
+  const p = new Path2D();
+  if (!pts.length) return p;
+  p.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[(i + 1) % pts.length];
+    p.quadraticCurveTo(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
+  }
+  p.closePath();
+  return p;
+}
 function freehandPath(el, noCache) {
   const key = el.type + el.strokeWidth;
   const hit = !noCache && pathCache.get(el.points);
   if (hit && hit.key === key) return hit.p;
-  const p = new Path2D(svgPathFromStroke(freehandOutline(el)));
+  const p = path2DFromStroke(freehandOutline(el, noCache));
   if (!noCache) pathCache.set(el.points, { key, p });
   return p;
 }
@@ -146,8 +175,41 @@ function boxPath(ctx, el, b) {
   }
 }
 
+// ---------- hidden answer (cover) ----------
+export const COVER_FILL = "#6366f1";
+function drawCover(ctx, el, b, presenting) {
+  const r = Math.min(12, b.w / 4, b.h / 4);
+  const path = () => {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(b.x, b.y, b.w, b.h, r);
+    else ctx.rect(b.x, b.y, b.w, b.h);
+  };
+  if (el.revealed) {
+    if (presenting) return; // the answer shows through
+    path();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = el.fill || COVER_FILL;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    return;
+  }
+  path();
+  ctx.fillStyle = el.fill || COVER_FILL;
+  ctx.fill();
+  const fs = Math.max(10, Math.min(28, b.h * 0.28, b.w / 9));
+  ctx.fillStyle = contrastText(el.fill || COVER_FILL);
+  ctx.font = `600 ${fs}px ${FONTS.sans}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(el.label || "Tap to reveal", b.x + b.w / 2, b.y + b.h / 2);
+}
+
 /** Draw one element in world space (ctx must already carry the camera transform). */
-export function drawElement(ctx, el, { dark = false, noCache = false, hideText = false, ghost = false } = {}) {
+export function drawElement(
+  ctx,
+  el,
+  { dark = false, noCache = false, hideText = false, ghost = false, presenting = false } = {},
+) {
   ctx.save();
   ctx.globalAlpha = (el.opacity ?? 1) * (ghost ? 0.25 : 1);
   const stroke = colorFor(el.stroke, dark);
@@ -269,6 +331,12 @@ export function drawElement(ctx, el, { dark = false, noCache = false, hideText =
       if (img.complete && img.naturalWidth) ctx.drawImage(img, b.x, b.y, b.w, b.h);
       break;
     }
+    case "graph":
+      drawGraph(ctx, el, getBounds(el), { dark });
+      break;
+    case "cover":
+      drawCover(ctx, el, getBounds(el), presenting);
+      break;
     case "image": {
       const b = getBounds(el);
       const img = getImage(el.src);
@@ -406,7 +474,8 @@ export function renderToCanvas(els, { dark, scale = 2, pad = 32, background = tr
   }
   const s = scale * k;
   ctx.setTransform(s, 0, 0, s, (pad - b.x) * s, (pad - b.y) * s);
-  for (const el of els) drawElement(ctx, el, { dark });
+  // Exports show the board as students see it: hidden answers stay covered, revealed ones show
+  for (const el of els) drawElement(ctx, el, { dark, presenting: true });
   return cv;
 }
 
@@ -508,6 +577,18 @@ export function renderToSVG(els, { dark, pad = 32, background = true }) {
         break;
       case "math":
         parts.push(`<image href="${mathSrc(el, st)}" x="${bb.x}" y="${bb.y}" width="${bb.w}" height="${bb.h}" opacity="${op}" preserveAspectRatio="none"/>`);
+        break;
+      case "graph":
+        parts.push(`<image href="${graphToDataURL(el, bb, dark)}" x="${bb.x}" y="${bb.y}" width="${bb.w}" height="${bb.h}" opacity="${op}"/>`);
+        break;
+      case "cover":
+        if (!el.revealed) {
+          const f = el.fill || COVER_FILL;
+          const fs = Math.max(10, Math.min(28, bb.h * 0.28, bb.w / 9));
+          parts.push(
+            `<rect x="${bb.x}" y="${bb.y}" width="${bb.w}" height="${bb.h}" rx="${Math.min(12, bb.w / 4, bb.h / 4)}" fill="${f}" opacity="${op}"/><text x="${bb.x + bb.w / 2}" y="${bb.y + bb.h / 2}" text-anchor="middle" dominant-baseline="central" font-weight="600" font-size="${fs}" font-family='${FONTS.sans}' fill="${contrastText(f)}">${esc(el.label || "Tap to reveal")}</text>`,
+          );
+        }
         break;
       case "image":
         parts.push(`<image href="${el.src}" x="${bb.x}" y="${bb.y}" width="${bb.w}" height="${bb.h}" opacity="${op}" preserveAspectRatio="none"/>`);

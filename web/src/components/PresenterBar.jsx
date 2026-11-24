@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Pencil, Highlighter, Zap, Eraser, MousePointer2, Focus, Timer, Brush, X, Hand } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, Highlighter, Zap, Eraser, MousePointer2, Focus, Timer, Brush, X, Hand, Video } from "lucide-react";
 import { INK } from "../lib/render";
 
 const TOOLS = [
@@ -29,6 +29,8 @@ export default function PresenterBar({
   onTimer,
   annotationCount,
   onClearAnnotations,
+  recording,
+  onRecord,
   onExit,
 }) {
   return (
@@ -70,6 +72,14 @@ export default function PresenterBar({
       <div className="hidden sm:block w-px h-6 bg-zinc-200 dark:bg-zinc-700 mx-1 shrink-0" />
       <button className={`icon-btn ${spotlight ? "on" : ""}`} onClick={onSpotlight} title="Spotlight: dim everything except around the pointer" aria-pressed={spotlight}>
         <Focus size={17} />
+      </button>
+      <button
+        className={`icon-btn ${recording ? "!text-red-500 !bg-red-50 dark:!bg-red-950/40" : ""}`}
+        onClick={onRecord}
+        title={recording ? "Stop recording and save the video" : "Record the lesson (board + microphone)"}
+        aria-pressed={!!recording}
+      >
+        <Video size={17} />
       </button>
       <button className={`icon-btn ${timerOpen ? "on" : ""}`} onClick={onTimer} title="Class timer" aria-pressed={timerOpen}>
         <Timer size={17} />
